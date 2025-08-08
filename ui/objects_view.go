@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -75,11 +76,11 @@ type ObjectsView struct {
 	currentBucket       string
 	currentPrefix       string // 当前路径，例如 "folder1/subfolder/"
 	objects             []s3client.S3Object
-	objectList          *widget.List                // 用于显示文件/文件夹列表的 Fyne 列表组件
-	breadcrumbContainer *fyne.Container             // 面包屑容器
+	objectList          *widget.List                   // 用于显示文件/文件夹列表的 Fyne 列表组件
+	breadcrumbContainer *fyne.Container                // 面包屑容器
 	selectedObjectIDs   map[widget.ListItemID]struct{} // 存储所有选中的对象 ID
-	lastSelectedID      widget.ListItemID           // 存储最后一次单击的对象 ID，用于 shift 多选
-	loadingIndicator    *widget.ProgressBarInfinite // 加载指示器
+	lastSelectedID      widget.ListItemID              // 存储最后一次单击的对象 ID，用于 shift 多选
+	loadingIndicator    *widget.ProgressBarInfinite    // 加载指示器
 	downloadButton      *widget.Button
 	deleteButton        *widget.Button
 }
@@ -89,7 +90,7 @@ func NewObjectsView(w fyne.Window) *ObjectsView {
 	ov := &ObjectsView{
 		window:            w,
 		selectedObjectIDs: make(map[widget.ListItemID]struct{}),
-		lastSelectedID:    -1, // 初始状态为未选中
+		lastSelectedID:    -1,                              // 初始状态为未选中
 		loadingIndicator:  widget.NewProgressBarInfinite(), // 初始化加载指示器
 	}
 	ov.loadingIndicator.Hide() // 默认隐藏
@@ -252,18 +253,9 @@ func (ov *ObjectsView) updateButtonsState() {
 		ov.deleteButton.Disable()
 	}
 
-	// 下载按钮：仅当选中一个文件时启用
-	if numSelected == 1 {
-		var selectedID widget.ListItemID
-		for id := range ov.selectedObjectIDs {
-			selectedID = id // 获取唯一的选中ID
-		}
-
-		if selectedID < len(ov.objects) && !ov.objects[selectedID].IsFolder {
-			ov.downloadButton.Enable()
-		} else {
-			ov.downloadButton.Disable()
-		}
+	// 下载按钮：只要有选中项就启用
+	if numSelected > 0 {
+		ov.downloadButton.Enable()
 	} else {
 		ov.downloadButton.Disable()
 	}
@@ -291,8 +283,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 				entry.infoLabel.SetText("文件夹")
 				// 设置双击事件
 				entry.doubleTapped = func() {
-					newPrefix := ov.currentPrefix + item.Name + "/"
-					ov.SetBucketAndPrefix(ov.s3Client, ov.currentBucket, newPrefix)
+					ov.SetBucketAndPrefix(ov.s3Client, ov.currentBucket, item.Key)
 				}
 			} else {
 				entry.icon.SetResource(theme.FileIcon())
@@ -351,57 +342,23 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 
 	// 下载按钮
 	ov.downloadButton = widget.NewButtonWithIcon("下载", theme.DownloadIcon(), func() {
-		if len(ov.selectedObjectIDs) != 1 {
-			dialog.ShowInformation("提示", "请选择一个文件进行下载。", ov.window)
-			return
-		}
-		var selectedID widget.ListItemID
-		for id := range ov.selectedObjectIDs {
-			selectedID = id
-		}
-
-		selectedObject := ov.objects[selectedID]
-		if selectedObject.IsFolder {
-			dialog.ShowInformation("提示", "无法下载文件夹。", ov.window)
+		if len(ov.selectedObjectIDs) == 0 {
+			dialog.ShowInformation("提示", "请至少选择一个要下载的项目。", ov.window)
 			return
 		}
 
-		fd := dialog.NewFileSave(func(writer fyne.URIWriteCloser, err error) {
+		// 弹出文件夹选择对话框
+		dialog.ShowFolderOpen(func(uri fyne.ListableURI, err error) {
 			if err != nil {
 				dialog.ShowError(err, ov.window)
 				return
 			}
-			if writer == nil {
+			if uri == nil {
+				// 用户取消了选择
 				return
 			}
-
-			s3Key := ov.currentPrefix + selectedObject.Name
-
-			go func() {
-				body, err := ov.s3Client.DownloadObject(ov.currentBucket, s3Key)
-				if err != nil {
-					fyne.Do(func() {
-						dialog.ShowError(fmt.Errorf("下载失败: %v", err), ov.window)
-					})
-					return
-				}
-				defer body.Close()
-
-				_, err = io.Copy(writer, body)
-				closeErr := writer.Close()
-				fyne.Do(func() {
-					if err != nil {
-						dialog.ShowError(fmt.Errorf("保存文件失败: %v", err), ov.window)
-					} else if closeErr != nil {
-						dialog.ShowError(fmt.Errorf("关闭文件失败: %v", closeErr), ov.window)
-					} else {
-						dialog.ShowInformation("成功", fmt.Sprintf("文件 %s 下载成功！", selectedObject.Name), ov.window)
-					}
-				})
-			}()
+			go ov.startDownloadProcess(uri.Path())
 		}, ov.window)
-		fd.SetFileName(selectedObject.Name)
-		fd.Show()
 	})
 
 	// 删除按钮
@@ -471,6 +428,126 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 
 	// 整体布局：顶部操作栏 + 分隔符 + 文件列表
 	return container.NewBorder(topBar, nil, nil, nil, container.NewVBox(widget.NewSeparator()), ov.objectList)
+}
+
+// startDownloadProcess 启动下载流程
+func (ov *ObjectsView) startDownloadProcess(localBasePath string) {
+	// 显示一个加载对话框
+	progressDialog := dialog.NewProgressInfinite("正在下载", "请稍候...", ov.window)
+	progressDialog.Show()
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var failedDownloads []string
+
+	for id := range ov.selectedObjectIDs {
+		if id >= len(ov.objects) {
+			continue
+		}
+		selectedObject := ov.objects[id]
+
+		wg.Add(1)
+		go func(obj s3client.S3Object) {
+			defer wg.Done()
+			if obj.IsFolder {
+				// 递归下载文件夹
+				ov.downloadFolder(obj, localBasePath, &failedDownloads, &mu)
+			} else {
+				// 下载单个文件
+				ov.downloadFile(obj, localBasePath, &failedDownloads, &mu)
+			}
+		}(selectedObject)
+	}
+
+	wg.Wait()
+	progressDialog.Hide()
+
+	fyne.Do(func() {
+		if len(failedDownloads) > 0 {
+			dialog.ShowError(fmt.Errorf("部分项目下载失败: %s", strings.Join(failedDownloads, ", ")), ov.window)
+		} else {
+			dialog.ShowInformation("成功", "所有项目下载完成。", ov.window)
+		}
+	})
+}
+
+// downloadFile 下载单个文件
+func (ov *ObjectsView) downloadFile(obj s3client.S3Object, localBasePath string, failedDownloads *[]string, mu *sync.Mutex) {
+	localPath := filepath.Join(localBasePath, obj.Name)
+
+	// 确保本地目录存在
+	if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
+		log.Printf("创建本地目录失败: %v", err)
+		mu.Lock()
+		*failedDownloads = append(*failedDownloads, obj.Name)
+		mu.Unlock()
+		return
+	}
+
+	// 创建本地文件
+	localFile, err := os.Create(localPath)
+	if err != nil {
+		log.Printf("创建本地文件失败: %v", err)
+		mu.Lock()
+		*failedDownloads = append(*failedDownloads, obj.Name)
+		mu.Unlock()
+		return
+	}
+	defer localFile.Close()
+
+	// 从 S3 下载
+	body, err := ov.s3Client.DownloadObject(ov.currentBucket, obj.Key)
+	if err != nil {
+		log.Printf("从 S3 下载失败: %v", err)
+		mu.Lock()
+		*failedDownloads = append(*failedDownloads, obj.Name)
+		mu.Unlock()
+		return
+	}
+	defer body.Close()
+
+	// 写入文件
+	_, err = io.Copy(localFile, body)
+	if err != nil {
+		log.Printf("写入本地文件失败: %v", err)
+		mu.Lock()
+		*failedDownloads = append(*failedDownloads, obj.Name)
+		mu.Unlock()
+	}
+}
+
+// downloadFolder 递归下载文件夹
+func (ov *ObjectsView) downloadFolder(folder s3client.S3Object, localBasePath string, failedDownloads *[]string, mu *sync.Mutex) {
+	// 获取文件夹下的所有文件
+	objectsToDownload, err := ov.s3Client.ListAllObjectsUnderPrefix(ov.currentBucket, folder.Key)
+	if err != nil {
+		log.Printf("列出文件夹 '%s' 内容失败: %v", folder.Name, err)
+		mu.Lock()
+		*failedDownloads = append(*failedDownloads, folder.Name)
+		mu.Unlock()
+		return
+	}
+
+	// 为每个文件启动一个 goroutine 进行下载
+	var wg sync.WaitGroup
+	for _, obj := range objectsToDownload {
+		wg.Add(1)
+		go func(fileToDownload s3client.S3Object) {
+			defer wg.Done()
+			// 计算相对路径，以保持目录结构
+			relativePath, err := filepath.Rel(folder.Key, fileToDownload.Key)
+			if err != nil {
+				// 如果 Key 不匹配，这不应该发生，但作为保险
+				relativePath = filepath.Base(fileToDownload.Key)
+			}
+			// 构建完整的本地保存路径
+			localPath := filepath.Join(localBasePath, folder.Name, relativePath)
+
+			// 下载这个文件
+			ov.downloadFile(s3client.S3Object{Name: filepath.Base(localPath), Key: fileToDownload.Key}, filepath.Dir(localPath), failedDownloads, mu)
+		}(obj)
+	}
+	wg.Wait()
 }
 
 // formatBytes 格式化字节大小为可读的字符串
