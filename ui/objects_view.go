@@ -2,11 +2,14 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
+	"os"
+
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/driver/desktop"
 	"io"
 	"io/ioutil"
 	"log"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -32,15 +35,55 @@ type listEntry struct {
 	ov *ObjectsView // 指向父视图的引用
 
 	doubleTapped func()
+	selected bool
+}
+
+// listEntryRenderer 自定义渲染器
+type listEntryRenderer struct {
+	entry       *listEntry
+	background  *canvas.Rectangle
+	content     *fyne.Container
+}
+
+func (r *listEntryRenderer) Destroy() {}
+
+func (r *listEntryRenderer) Layout(size fyne.Size) {
+	r.background.Resize(size)
+	r.content.Resize(size)
+}
+
+func (r *listEntryRenderer) MinSize() fyne.Size {
+	return r.content.MinSize()
+}
+
+func (r *listEntryRenderer) Objects() []fyne.CanvasObject {
+	return []fyne.CanvasObject{r.background, r.content}
+}
+
+// Refresh 根据选中状态更新背景色
+func (r *listEntryRenderer) Refresh() {
+	if r.entry.selected {
+		r.background.FillColor = theme.SelectionColor()
+	} else {
+		r.background.FillColor = color.Transparent
+	}
+	r.background.Refresh()
+	canvas.Refresh(r.entry)
 }
 
 func (e *listEntry) CreateRenderer() fyne.WidgetRenderer {
-	return widget.NewSimpleRenderer(container.NewHBox(
+	bg := canvas.NewRectangle(color.Transparent)
+	content := container.NewHBox(
 		e.icon,
 		e.nameLabel,
 		layout.NewSpacer(),
 		e.infoLabel,
-	))
+	)
+	return &listEntryRenderer{
+		entry:       e,
+		background:  bg,
+		content:     content,
+	}
 }
 
 // DoubleTapped 实现了 fyne.DoubleTappable 接口
@@ -76,11 +119,11 @@ type ObjectsView struct {
 	currentBucket       string
 	currentPrefix       string // 当前路径，例如 "folder1/subfolder/"
 	objects             []s3client.S3Object
-	objectList          *widget.List                   // 用于显示文件/文件夹列表的 Fyne 列表组件
-	breadcrumbContainer *fyne.Container                // 面包屑容器
+	objectList          *widget.List                // 用于显示文件/文件夹列表的 Fyne 列表组件
+	breadcrumbContainer *fyne.Container             // 面包屑容器
 	selectedObjectIDs   map[widget.ListItemID]struct{} // 存储所有选中的对象 ID
-	lastSelectedID      widget.ListItemID              // 存储最后一次单击的对象 ID，用于 shift 多选
-	loadingIndicator    *widget.ProgressBarInfinite    // 加载指示器
+	lastSelectedID      widget.ListItemID           // 存储最后一次单击的对象 ID，用于 shift 多选
+	loadingIndicator    *widget.ProgressBarInfinite // 加载指示器
 	downloadButton      *widget.Button
 	deleteButton        *widget.Button
 }
@@ -90,7 +133,7 @@ func NewObjectsView(w fyne.Window) *ObjectsView {
 	ov := &ObjectsView{
 		window:            w,
 		selectedObjectIDs: make(map[widget.ListItemID]struct{}),
-		lastSelectedID:    -1,                              // 初始状态为未选中
+		lastSelectedID:    -1, // 初始状态为未选中
 		loadingIndicator:  widget.NewProgressBarInfinite(), // 初始化加载指示器
 	}
 	ov.loadingIndicator.Hide() // 默认隐藏
@@ -104,9 +147,6 @@ func (ov *ObjectsView) SetBucketAndPrefix(client *s3client.S3Client, bucket, pre
 	ov.currentPrefix = prefix
 
 	// 重置选择状态
-	if ov.objectList != nil {
-		ov.objectList.UnselectAll()
-	}
 	ov.selectedObjectIDs = make(map[widget.ListItemID]struct{})
 	ov.lastSelectedID = -1
 	ov.updateButtonsState()
@@ -199,19 +239,14 @@ func (ov *ObjectsView) handleItemClick(id widget.ListItemID, m *desktop.MouseEve
 
 	if !ctrl && !shift {
 		// 普通单击：清空现有选择，并选中当前项
-		ov.objectList.UnselectAll()
 		ov.selectedObjectIDs = make(map[widget.ListItemID]struct{})
-
-		ov.objectList.Select(id)
 		ov.selectedObjectIDs[id] = struct{}{}
 		ov.lastSelectedID = id
 	} else if ctrl {
 		// Ctrl/Cmd + 单击：切换选中状态
 		if _, selected := ov.selectedObjectIDs[id]; selected {
-			ov.objectList.Unselect(id)
 			delete(ov.selectedObjectIDs, id)
 		} else {
-			ov.objectList.Select(id)
 			ov.selectedObjectIDs[id] = struct{}{}
 		}
 		ov.lastSelectedID = id
@@ -219,22 +254,21 @@ func (ov *ObjectsView) handleItemClick(id widget.ListItemID, m *desktop.MouseEve
 		// Shift + 单击：范围选择
 		if ov.lastSelectedID == -1 {
 			// 如果没有前一个选中的，就当做普通单击
-			ov.objectList.Select(id)
 			ov.selectedObjectIDs[id] = struct{}{}
 			ov.lastSelectedID = id
 		} else {
+			// 清空当前选择，然后重新计算范围选择
+			ov.selectedObjectIDs = make(map[widget.ListItemID]struct{})
 			start, end := ov.lastSelectedID, id
 			if start > end {
 				start, end = end, start
 			}
 			for i := start; i <= end; i++ {
-				if _, selected := ov.selectedObjectIDs[i]; !selected {
-					ov.objectList.Select(i)
-					ov.selectedObjectIDs[i] = struct{}{}
-				}
+				ov.selectedObjectIDs[i] = struct{}{}
 			}
 		}
 	}
+	ov.objectList.Refresh() // 刷新列表以更新视觉效果
 	ov.updateButtonsState()
 }
 
@@ -278,6 +312,10 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 
 			entry.id = id
 			entry.nameLabel.SetText(item.Name)
+
+			// 根据是否在我们的 map 中来更新选中状态
+			_, entry.selected = ov.selectedObjectIDs[id]
+
 			if item.IsFolder {
 				entry.icon.SetResource(theme.FolderIcon())
 				entry.infoLabel.SetText("文件夹")
@@ -291,6 +329,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 				// 文件没有双击事件
 				entry.doubleTapped = nil
 			}
+			entry.Refresh()
 		},
 	)
 
@@ -383,12 +422,15 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 						wg.Add(1)
 						go func(selectedObject s3client.S3Object) {
 							defer wg.Done()
-							s3Key := ov.currentPrefix + selectedObject.Name
+							s3Key := selectedObject.Key
 							if selectedObject.IsFolder {
-								// S3 删除"文件夹"通常是删除以该前缀命名的0字节对象
-								// 但更稳妥的做法是确保key以/结尾，如果ListObjects返回的就是这样的
-								// 我们的ListObjects返回的是不带/的文件夹名，所以这里要加上
-								s3Key += "/"
+								// 为了删除文件夹，我们需要删除其下的所有对象
+								// 这是一个复杂操作，S3 本身没有原子性的文件夹删除
+								// 简单起见，我们目前只删除代表文件夹的那个对象（如果存在）
+								// 注意：这通常不会删除文件夹里的内容
+								if !strings.HasSuffix(s3Key, "/") {
+									s3Key += "/"
+								}
 							}
 							err := ov.s3Client.DeleteObject(ov.currentBucket, s3Key)
 							if err != nil {
@@ -435,32 +477,35 @@ func (ov *ObjectsView) startDownloadProcess(localBasePath string) {
 	// 显示一个加载对话框
 	progressDialog := dialog.NewProgressInfinite("正在下载", "请稍候...", ov.window)
 	progressDialog.Show()
+	defer progressDialog.Hide()
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var failedDownloads []string
 
-	for id := range ov.selectedObjectIDs {
-		if id >= len(ov.objects) {
-			continue
-		}
-		selectedObject := ov.objects[id]
+	objectsToDownload := make(chan s3client.S3Object, len(ov.selectedObjectIDs))
 
+	// 启动固定数量的 worker goroutine
+	numWorkers := 10 // 可以根据需要调整并发数
+	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
-		go func(obj s3client.S3Object) {
+		go func() {
 			defer wg.Done()
-			if obj.IsFolder {
-				// 递归下载文件夹
-				ov.downloadFolder(obj, localBasePath, &failedDownloads, &mu)
-			} else {
-				// 下载单个文件
-				ov.downloadFile(obj, localBasePath, &failedDownloads, &mu)
+			for obj := range objectsToDownload {
+				ov.processDownloadItem(obj, localBasePath, &failedDownloads, &mu)
 			}
-		}(selectedObject)
+		}()
 	}
 
+	// 遍历选中的项目并添加到下载队列
+	for id := range ov.selectedObjectIDs {
+		if id < len(ov.objects) {
+			objectsToDownload <- ov.objects[id]
+		}
+	}
+	close(objectsToDownload)
+
 	wg.Wait()
-	progressDialog.Hide()
 
 	fyne.Do(func() {
 		if len(failedDownloads) > 0 {
@@ -471,8 +516,20 @@ func (ov *ObjectsView) startDownloadProcess(localBasePath string) {
 	})
 }
 
+// processDownloadItem 处理单个项目（文件或文件夹）的下载
+func (ov *ObjectsView) processDownloadItem(obj s3client.S3Object, localBasePath string, failedDownloads *[]string, mu *sync.Mutex) {
+	if obj.IsFolder {
+		// 递归下载文件夹
+		ov.downloadFolder(obj, localBasePath, failedDownloads, mu)
+	} else {
+		// 下载单个文件
+		ov.downloadFile(obj, localBasePath, failedDownloads, mu)
+	}
+}
+
 // downloadFile 下载单个文件
 func (ov *ObjectsView) downloadFile(obj s3client.S3Object, localBasePath string, failedDownloads *[]string, mu *sync.Mutex) {
+	// 修正：当直接下载文件时，它的相对路径就是它的名字
 	localPath := filepath.Join(localBasePath, obj.Name)
 
 	// 确保本地目录存在
@@ -535,15 +592,19 @@ func (ov *ObjectsView) downloadFolder(folder s3client.S3Object, localBasePath st
 		go func(fileToDownload s3client.S3Object) {
 			defer wg.Done()
 			// 计算相对路径，以保持目录结构
-			relativePath, err := filepath.Rel(folder.Key, fileToDownload.Key)
-			if err != nil {
-				// 如果 Key 不匹配，这不应该发生，但作为保险
-				relativePath = filepath.Base(fileToDownload.Key)
-			}
+			// folder.Key 是类似 "photos/2024/"
+			// fileToDownload.Key 是类似 "photos/2024/image1.jpg"
+			// 我们需要得到 "image1.jpg"
+			relativePath := strings.TrimPrefix(fileToDownload.Key, folder.Key)
+
 			// 构建完整的本地保存路径
+			// localBasePath 是用户选择的目录，例如 "/Users/me/Downloads"
+			// folder.Name 是 "2024"
+			// relativePath 是 "image1.jpg"
+			// 最终路径是 "/Users/me/Downloads/2024/image1.jpg"
 			localPath := filepath.Join(localBasePath, folder.Name, relativePath)
 
-			// 下载这个文件
+			// 下载这个文件，它的逻辑名称是它的相对路径
 			ov.downloadFile(s3client.S3Object{Name: filepath.Base(localPath), Key: fileToDownload.Key}, filepath.Dir(localPath), failedDownloads, mu)
 		}(obj)
 	}
