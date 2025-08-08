@@ -76,27 +76,28 @@ type S3Object struct {
 	LastModified string // 最后修改时间
 }
 
-// ListObjects 列出指定存储桶和前缀下的对象
-func (sc *S3Client) ListObjects(bucketName, prefix string) ([]S3Object, error) {
+// ListObjects 列出指定存储桶和前缀下的对象（分页）
+func (sc *S3Client) ListObjects(bucketName, prefix, marker string, pageSize int32) ([]S3Object, *string, error) {
 	input := &s3.ListObjectsV2Input{
 		Bucket:    aws.String(bucketName),
 		Delimiter: aws.String("/"), // 用于区分文件夹
 		Prefix:    aws.String(prefix),
+		MaxKeys:   &pageSize,
+	}
+	if marker != "" {
+		input.ContinuationToken = aws.String(marker)
 	}
 
 	output, err := sc.client.ListObjectsV2(context.TODO(), input)
 	if err != nil {
-		return nil, fmt.Errorf("列出对象失败: %w", err)
+		return nil, nil, fmt.Errorf("列出对象失败: %w", err)
 	}
 
 	var objects []S3Object
 
 	// 处理 CommonPrefixes (文件夹)
 	for _, commonPrefix := range output.CommonPrefixes {
-		// 文件夹的 Key 是完整的 S3 路径，例如 "folder1/subfolder/"
-		// 文件夹的 Name 是简称，例如 "subfolder"
 		fullKey := *commonPrefix.Prefix
-		// 从完整 Key 中提取简称
 		name := strings.TrimSuffix(fullKey, "/")
 		if prefix != "" {
 			name = strings.TrimPrefix(name, prefix)
@@ -127,7 +128,7 @@ func (sc *S3Client) ListObjects(bucketName, prefix string) ([]S3Object, error) {
 		})
 	}
 
-	return objects, nil
+	return objects, output.NextContinuationToken, nil
 }
 
 // UploadObject 上传文件到 S3

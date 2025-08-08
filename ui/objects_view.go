@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"os"
+	"strconv"
 
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/driver/desktop"
@@ -27,7 +28,7 @@ import (
 // tappableContainer 是一个可以捕获点击事件的容器
 type tappableContainer struct {
 	widget.BaseWidget
-	content  fyne.CanvasObject
+	content fyne.CanvasObject
 	onTapped func()
 }
 
@@ -61,14 +62,14 @@ type listEntry struct {
 	ov *ObjectsView // 指向父视图的引用
 
 	doubleTapped func()
-	selected     bool
+	selected bool
 }
 
 // listEntryRenderer 自定义渲染器
 type listEntryRenderer struct {
-	entry      *listEntry
-	background *canvas.Rectangle
-	content    *fyne.Container
+	entry       *listEntry
+	background  *canvas.Rectangle
+	content     *fyne.Container
 }
 
 func (r *listEntryRenderer) Destroy() {}
@@ -106,9 +107,9 @@ func (e *listEntry) CreateRenderer() fyne.WidgetRenderer {
 		e.infoLabel,
 	)
 	return &listEntryRenderer{
-		entry:      e,
-		background: bg,
-		content:    content,
+		entry:       e,
+		background:  bg,
+		content:     content,
 	}
 }
 
@@ -145,13 +146,24 @@ type ObjectsView struct {
 	currentBucket       string
 	currentPrefix       string // 当前路径，例如 "folder1/subfolder/"
 	objects             []s3client.S3Object
-	objectList          *widget.List                   // 用于显示文件/文件夹列表的 Fyne 列表组件
-	breadcrumbContainer *fyne.Container                // 面包屑容器
+	objectList          *widget.List                // 用于显示文件/文件夹列表的 Fyne 列表组件
+	breadcrumbContainer *fyne.Container             // 面包屑容器
 	selectedObjectIDs   map[widget.ListItemID]struct{} // 存储所有选中的对象 ID
-	lastSelectedID      widget.ListItemID              // 存储最后一次单击的对象 ID，用于 shift 多选
-	loadingIndicator    *widget.ProgressBarInfinite    // 加载指示器
+	lastSelectedID      widget.ListItemID           // 存储最后一次单击的对象 ID，用于 shift 多选
+	loadingIndicator    *widget.ProgressBarInfinite // 加载指示器
 	downloadButton      *widget.Button
 	deleteButton        *widget.Button
+	serviceInfoLabel    *widget.Label // 用于显示当前服务信息的标签
+
+	// 分页相关状态
+	currentPage       int
+	pageSize          int
+	pageMarkers       []string // 存储每一页的起始 marker
+	nextPageMarker    *string
+	prevButton        *widget.Button
+	nextButton        *widget.Button
+	pageInfoLabel     *widget.Label
+	pageSizeEntry     *widget.Entry
 }
 
 // NewObjectsView 创建并返回一个新的 ObjectsView 实例
@@ -159,11 +171,25 @@ func NewObjectsView(w fyne.Window) *ObjectsView {
 	ov := &ObjectsView{
 		window:            w,
 		selectedObjectIDs: make(map[widget.ListItemID]struct{}),
-		lastSelectedID:    -1,                              // 初始状态为未选中
-		loadingIndicator:  widget.NewProgressBarInfinite(), // 初始化加载指示器
+		lastSelectedID:    -1,
+		loadingIndicator:  widget.NewProgressBarInfinite(),
+		serviceInfoLabel:  widget.NewLabel("未选择服务"),
+		currentPage:       1,
+		pageSize:          100, // 默认每页 100 条
+		pageMarkers:       []string{""}, // 第1页的 marker 是空字符串
 	}
-	ov.loadingIndicator.Hide() // 默认隐藏
+	ov.serviceInfoLabel.Alignment = fyne.TextAlignCenter
+	ov.loadingIndicator.Hide()
 	return ov
+}
+
+// SetServiceAlias 设置并显示当前服务的别名
+func (ov *ObjectsView) SetServiceAlias(alias string) {
+	if alias != "" {
+		ov.serviceInfoLabel.SetText(fmt.Sprintf("当前服务: %s", alias))
+	} else {
+		ov.serviceInfoLabel.SetText("未选择服务")
+	}
 }
 
 // SetBucketAndPrefix 设置当前存储桶和前缀，并加载对象列表
@@ -172,38 +198,56 @@ func (ov *ObjectsView) SetBucketAndPrefix(client *s3client.S3Client, bucket, pre
 	ov.currentBucket = bucket
 	ov.currentPrefix = prefix
 
-	// 重置选择状态
+	// 重置分页和选择状态
+	ov.resetPagingAndSelection()
+	ov.loadObjects()
+	ov.updateBreadcrumbs()
+}
+
+func (ov *ObjectsView) resetPagingAndSelection() {
+	ov.currentPage = 1
+	ov.pageMarkers = []string{""}
+	ov.nextPageMarker = nil
 	ov.selectedObjectIDs = make(map[widget.ListItemID]struct{})
 	ov.lastSelectedID = -1
 	ov.updateButtonsState()
-
-	ov.loadObjects()
-	ov.updateBreadcrumbs() // 更新面包屑
+	ov.updatePaginationControls()
 }
 
 // loadObjects 加载指定存储桶和前缀下的对象列表
 func (ov *ObjectsView) loadObjects() {
 	if ov.s3Client == nil || ov.currentBucket == "" {
-		ov.objects = []s3client.S3Object{} // 没有客户端或未选择存储桶，清空列表
+		ov.objects = []s3client.S3Object{}
 		ov.refreshObjectList()
 		ov.updateButtonsState()
+		ov.updatePaginationControls()
 		return
 	}
 
-	ov.loadingIndicator.Show() // 显示加载指示器
+	ov.loadingIndicator.Show()
+	ov.updatePaginationControls() // 禁用按钮
+
 	go func() {
-		objects, err := ov.s3Client.ListObjects(ov.currentBucket, ov.currentPrefix)
+		marker := ov.pageMarkers[ov.currentPage-1]
+		objects, nextMarker, err := ov.s3Client.ListObjects(ov.currentBucket, ov.currentPrefix, marker, int32(ov.pageSize))
+
 		fyne.Do(func() {
-			ov.loadingIndicator.Hide() // 隐藏加载指示器
+			ov.loadingIndicator.Hide()
 			if err != nil {
 				log.Printf("列出对象失败: %v", err)
 				dialog.ShowError(fmt.Errorf("列出对象失败: %v", err), ov.window)
-				ov.objects = []s3client.S3Object{} // 加载失败，清空列表
+				ov.objects = []s3client.S3Object{}
 			} else {
 				ov.objects = objects
+				ov.nextPageMarker = nextMarker
+				// 如果有下一页，并且 markers 数组中还没有记录，则添加
+				if nextMarker != nil && len(ov.pageMarkers) == ov.currentPage {
+					ov.pageMarkers = append(ov.pageMarkers, *nextMarker)
+				}
 			}
 			ov.refreshObjectList()
 			ov.updateButtonsState()
+			ov.updatePaginationControls()
 		})
 	}()
 }
@@ -222,31 +266,28 @@ func (ov *ObjectsView) updateBreadcrumbs() {
 		return
 	}
 
-	ov.breadcrumbContainer.RemoveAll() // 清空现有面包屑
+	ov.breadcrumbContainer.RemoveAll()
 
-	// 添加根目录 (存储桶名称)
 	if ov.currentBucket != "" {
 		bucketBtn := widget.NewButton(ov.currentBucket, func() {
-			ov.SetBucketAndPrefix(ov.s3Client, ov.currentBucket, "") // 返回存储桶根目录
+			ov.SetBucketAndPrefix(ov.s3Client, ov.currentBucket, "")
 		})
 		ov.breadcrumbContainer.Add(bucketBtn)
 	}
 
-	// 如果有前缀，添加路径段
 	if ov.currentPrefix != "" {
 		pathSegments := strings.Split(strings.TrimSuffix(ov.currentPrefix, "/"), "/")
 		currentPath := ""
 		for _, segment := range pathSegments {
-			if segment == "" { // 避免空段
+			if segment == "" {
 				continue
 			}
 			currentPath += segment + "/"
-			// 闭包捕获当前路径，确保点击时使用正确的路径
-			pathForClosure := currentPath // 复制变量，避免闭包问题
+			pathForClosure := currentPath
 			segmentBtn := widget.NewButton(segment, func() {
 				ov.SetBucketAndPrefix(ov.s3Client, ov.currentBucket, pathForClosure)
 			})
-			ov.breadcrumbContainer.Add(widget.NewLabel(">")) // 分隔符
+			ov.breadcrumbContainer.Add(widget.NewLabel(">"))
 			ov.breadcrumbContainer.Add(segmentBtn)
 		}
 	}
@@ -256,7 +297,6 @@ func (ov *ObjectsView) updateBreadcrumbs() {
 // handleItemClick 处理列表项的点击事件，包含多选逻辑
 func (ov *ObjectsView) handleItemClick(id widget.ListItemID, m *desktop.MouseEvent) {
 	if m.Button == desktop.MouseButtonSecondary {
-		// 未来可以实现右键菜单
 		return
 	}
 
@@ -264,19 +304,15 @@ func (ov *ObjectsView) handleItemClick(id widget.ListItemID, m *desktop.MouseEve
 	shift := m.Modifier&desktop.ShiftModifier != 0
 
 	if !ctrl && !shift {
-		// 普通单击
-		// 如果只选中了当前项，则取消选择
 		if _, selected := ov.selectedObjectIDs[id]; selected && len(ov.selectedObjectIDs) == 1 {
 			ov.selectedObjectIDs = make(map[widget.ListItemID]struct{})
 			ov.lastSelectedID = -1
 		} else {
-			// 否则，清空现有选择，并选中当前项
 			ov.selectedObjectIDs = make(map[widget.ListItemID]struct{})
 			ov.selectedObjectIDs[id] = struct{}{}
 			ov.lastSelectedID = id
 		}
 	} else if ctrl {
-		// Ctrl/Cmd + 单击：切换选中状态
 		if _, selected := ov.selectedObjectIDs[id]; selected {
 			delete(ov.selectedObjectIDs, id)
 		} else {
@@ -284,9 +320,7 @@ func (ov *ObjectsView) handleItemClick(id widget.ListItemID, m *desktop.MouseEve
 		}
 		ov.lastSelectedID = id
 	} else if shift {
-		// Shift + 单击：范围选择
 		if ov.lastSelectedID == -1 {
-			// 如果没有前一个选中的，就当做普通单击
 			ov.selectedObjectIDs[id] = struct{}{}
 			ov.lastSelectedID = id
 		} else {
@@ -299,7 +333,7 @@ func (ov *ObjectsView) handleItemClick(id widget.ListItemID, m *desktop.MouseEve
 			}
 		}
 	}
-	ov.objectList.Refresh() // 刷新列表以更新视觉效果
+	ov.objectList.Refresh()
 	ov.updateButtonsState()
 }
 
@@ -321,18 +355,37 @@ func (ov *ObjectsView) updateButtonsState() {
 
 	numSelected := len(ov.selectedObjectIDs)
 
-	// 删除按钮：只要有选中项就启用
 	if numSelected > 0 {
 		ov.deleteButton.Enable()
-	} else {
-		ov.deleteButton.Disable()
-	}
-
-	// 下载按钮：只要有选中项就启用
-	if numSelected > 0 {
 		ov.downloadButton.Enable()
 	} else {
+		ov.deleteButton.Disable()
 		ov.downloadButton.Disable()
+	}
+}
+
+func (ov *ObjectsView) updatePaginationControls() {
+	if ov.pageInfoLabel == nil || ov.prevButton == nil || ov.nextButton == nil {
+		return
+	}
+
+	ov.pageInfoLabel.SetText(fmt.Sprintf("第 %d 页", ov.currentPage))
+
+	if ov.currentPage > 1 {
+		ov.prevButton.Enable()
+	} else {
+		ov.prevButton.Disable()
+	}
+
+	if ov.nextPageMarker != nil {
+		ov.nextButton.Enable()
+	} else {
+		ov.nextButton.Disable()
+	}
+
+	if ov.loadingIndicator.Visible() {
+		ov.prevButton.Disable()
+		ov.nextButton.Disable()
 	}
 }
 
@@ -343,45 +396,35 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 			return len(ov.objects)
 		},
 		func() fyne.CanvasObject {
-			// 列表项模板使用我们自定义的 listEntry
 			return newListEntry(ov)
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
-			// 更新列表项内容
 			item := ov.objects[id]
 			entry := obj.(*listEntry)
-
 			entry.id = id
 			entry.nameLabel.SetText(item.Name)
-
-			// 根据是否在我们的 map 中来更新选中状态
 			_, entry.selected = ov.selectedObjectIDs[id]
 
 			if item.IsFolder {
 				entry.icon.SetResource(theme.FolderIcon())
 				entry.infoLabel.SetText("文件夹")
-				// 设置双击事件
 				entry.doubleTapped = func() {
 					ov.SetBucketAndPrefix(ov.s3Client, ov.currentBucket, item.Key)
 				}
 			} else {
-				entry.icon.SetResource(getIconForFile(item.Name)) // 使用新函数获取图标
+				entry.icon.SetResource(getIconForFile(item.Name))
 				entry.infoLabel.SetText(fmt.Sprintf("%s | %s", formatBytes(item.Size), item.LastModified))
-				// 文件没有双击事件
 				entry.doubleTapped = nil
 			}
 			entry.Refresh()
 		},
 	)
 
-	// 将列表放入可点击的容器中，以捕获空白区域的点击
 	listContainer := newTappableContainer(ov.objectList, ov.unselectAllObjects)
 
-	// 面包屑容器
 	ov.breadcrumbContainer = container.NewHBox()
-	ov.updateBreadcrumbs() // 初始化面包屑
+	ov.updateBreadcrumbs()
 
-	// 上传按钮
 	uploadButton := widget.NewButtonWithIcon("上传", theme.ContentAddIcon(), func() {
 		if ov.s3Client == nil || ov.currentBucket == "" {
 			dialog.ShowInformation("提示", "请先选择一个 S3 服务和存储桶。", ov.window)
@@ -422,8 +465,6 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 		}, ov.window)
 		fd.Show()
 	})
-
-	// 下载按钮
 	ov.downloadButton = widget.NewButtonWithIcon("下载", theme.DownloadIcon(), func() {
 		if len(ov.selectedObjectIDs) == 0 {
 			dialog.ShowInformation("提示", "请至少选择一个要下载的项目。", ov.window)
@@ -443,8 +484,6 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 			go ov.startDownloadProcess(uri.Path())
 		}, ov.window)
 	})
-
-	// 删除按钮
 	ov.deleteButton = widget.NewButtonWithIcon("删除", theme.DeleteIcon(), func() {
 		selectedCount := len(ov.selectedObjectIDs)
 		if selectedCount == 0 {
@@ -499,21 +538,59 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 			}
 		}, ov.window)
 	})
+	ov.updateButtonsState()
 
-	ov.updateButtonsState() // 初始化按钮状态
-
-	// 文件操作按钮布局
 	fileOpsButtons := container.NewHBox(uploadButton, ov.downloadButton, ov.deleteButton)
 
-	// 顶部操作栏：面包屑 + 加载指示器 + 操作按钮
-	topBar := container.NewBorder(nil, nil,
-		ov.breadcrumbContainer,
-		container.NewHBox(layout.NewSpacer(), ov.loadingIndicator, fileOpsButtons),
-		nil,
+	topBar := container.NewBorder(nil, nil, ov.breadcrumbContainer, fileOpsButtons, nil)
+
+	// --- 分页控件 ---
+	ov.prevButton = widget.NewButtonWithIcon("", theme.NavigateBackIcon(), func() {
+		if ov.currentPage > 1 {
+			ov.currentPage--
+			ov.loadObjects()
+		}
+	})
+	ov.nextButton = widget.NewButtonWithIcon("", theme.NavigateNextIcon(), func() {
+		if ov.nextPageMarker != nil {
+			ov.currentPage++
+			ov.loadObjects()
+		}
+	})
+	ov.pageInfoLabel = widget.NewLabel("")
+	ov.pageSizeEntry = widget.NewEntry()
+	ov.pageSizeEntry.SetText(strconv.Itoa(ov.pageSize))
+	ov.pageSizeEntry.OnSubmitted = func(s string) {
+		ps, err := strconv.Atoi(s)
+		if err != nil || ps <= 0 {
+			dialog.ShowError(fmt.Errorf("无效的页面大小"), ov.window)
+			ov.pageSizeEntry.SetText(strconv.Itoa(ov.pageSize)) // 恢复原值
+			return
+		}
+		ov.pageSize = ps
+		ov.resetPagingAndSelection()
+		ov.loadObjects()
+	}
+
+	pagingControls := container.NewHBox(
+		layout.NewSpacer(),
+		widget.NewLabel("每页显示:"),
+		ov.pageSizeEntry,
+		ov.prevButton,
+		ov.pageInfoLabel,
+		ov.nextButton,
 	)
 
-	// 整体布局：顶部操作栏 + 分隔符 + 文件列表
-	return container.NewBorder(topBar, nil, nil, nil, container.NewVBox(widget.NewSeparator()), listContainer)
+	ov.updatePaginationControls()
+
+	// --- 底部状态栏 ---
+	// 创建一个灰色的标签用于显示服务信息
+	serviceInfoLabelContainer := container.NewCenter(ov.serviceInfoLabel)
+	ov.serviceInfoLabel.TextStyle.Italic = true
+
+	statusBar := container.NewBorder(nil, nil, nil, pagingControls, serviceInfoLabelContainer)
+
+	return container.NewBorder(topBar, statusBar, nil, nil, listContainer)
 }
 
 // startDownloadProcess 启动下载流程
@@ -662,14 +739,17 @@ func getIconForFile(name string) fyne.Resource {
 	ext := strings.ToLower(filepath.Ext(name))
 	switch ext {
 	case ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg", ".webp":
-		return theme.FileImageIcon()
+		// v2.6.2 中没有 FileImageIcon，使用通用图标
+		return theme.FileIcon()
 	case ".mp3", ".wav", ".ogg", ".flac":
-		return theme.FileAudioIcon()
+		// v2.6.2 中没有 FileAudioIcon，使用通用图标
+		return theme.FileIcon()
 	case ".mp4", ".avi", ".mov", ".mkv", ".webm":
-		return theme.FileVideoIcon()
+		// v2.6.2 中没有 FileVideoIcon，使用通用图标
+		return theme.FileIcon()
 	case ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2":
 		// v2.6.2 中没有 FileArchiveIcon，使用通用图标
-		return theme.FileApplicationIcon()
+		return theme.FileIcon()
 	case ".txt", ".md", ".log", ".json", ".xml", ".yaml", ".yml", ".ini", ".cfg":
 		return theme.FileTextIcon()
 	default:
