@@ -27,7 +27,7 @@ import (
 // tappableContainer 是一个可以捕获点击事件的容器
 type tappableContainer struct {
 	widget.BaseWidget
-	content fyne.CanvasObject
+	content  fyne.CanvasObject
 	onTapped func()
 }
 
@@ -61,14 +61,14 @@ type listEntry struct {
 	ov *ObjectsView // 指向父视图的引用
 
 	doubleTapped func()
-	selected bool
+	selected     bool
 }
 
 // listEntryRenderer 自定义渲染器
 type listEntryRenderer struct {
-	entry       *listEntry
-	background  *canvas.Rectangle
-	content     *fyne.Container
+	entry      *listEntry
+	background *canvas.Rectangle
+	content    *fyne.Container
 }
 
 func (r *listEntryRenderer) Destroy() {}
@@ -106,9 +106,9 @@ func (e *listEntry) CreateRenderer() fyne.WidgetRenderer {
 		e.infoLabel,
 	)
 	return &listEntryRenderer{
-		entry:       e,
-		background:  bg,
-		content:     content,
+		entry:      e,
+		background: bg,
+		content:    content,
 	}
 }
 
@@ -145,11 +145,11 @@ type ObjectsView struct {
 	currentBucket       string
 	currentPrefix       string // 当前路径，例如 "folder1/subfolder/"
 	objects             []s3client.S3Object
-	objectList          *widget.List                // 用于显示文件/文件夹列表的 Fyne 列表组件
-	breadcrumbContainer *fyne.Container             // 面包屑容器
+	objectList          *widget.List                   // 用于显示文件/文件夹列表的 Fyne 列表组件
+	breadcrumbContainer *fyne.Container                // 面包屑容器
 	selectedObjectIDs   map[widget.ListItemID]struct{} // 存储所有选中的对象 ID
-	lastSelectedID      widget.ListItemID           // 存储最后一次单击的对象 ID，用于 shift 多选
-	loadingIndicator    *widget.ProgressBarInfinite // 加载指示器
+	lastSelectedID      widget.ListItemID              // 存储最后一次单击的对象 ID，用于 shift 多选
+	loadingIndicator    *widget.ProgressBarInfinite    // 加载指示器
 	downloadButton      *widget.Button
 	deleteButton        *widget.Button
 }
@@ -159,7 +159,7 @@ func NewObjectsView(w fyne.Window) *ObjectsView {
 	ov := &ObjectsView{
 		window:            w,
 		selectedObjectIDs: make(map[widget.ListItemID]struct{}),
-		lastSelectedID:    -1, // 初始状态为未选中
+		lastSelectedID:    -1,                              // 初始状态为未选中
 		loadingIndicator:  widget.NewProgressBarInfinite(), // 初始化加载指示器
 	}
 	ov.loadingIndicator.Hide() // 默认隐藏
@@ -365,7 +365,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 					ov.SetBucketAndPrefix(ov.s3Client, ov.currentBucket, item.Key)
 				}
 			} else {
-				entry.icon.SetResource(theme.FileIcon())
+				entry.icon.SetResource(getIconForFile(item.Name)) // 使用新函数获取图标
 				entry.infoLabel.SetText(fmt.Sprintf("%s | %s", formatBytes(item.Size), item.LastModified))
 				// 文件没有双击事件
 				entry.doubleTapped = nil
@@ -653,6 +653,28 @@ func (ov *ObjectsView) downloadFolder(folder s3client.S3Object, localBasePath st
 		}(obj)
 	}
 	wg.Wait()
+}
+
+// getIconForFile 根据文件名返回对应的图标
+func getIconForFile(name string) fyne.Resource {
+	// 注意：Fyne v2.6.2 的内置主题图标比较有限。
+	// 这里我们使用该版本支持的图标，对于不支持的类型，统一回退到通用文件图标。
+	ext := strings.ToLower(filepath.Ext(name))
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg", ".webp":
+		return theme.FileImageIcon()
+	case ".mp3", ".wav", ".ogg", ".flac":
+		return theme.FileAudioIcon()
+	case ".mp4", ".avi", ".mov", ".mkv", ".webm":
+		return theme.FileVideoIcon()
+	case ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2":
+		// v2.6.2 中没有 FileArchiveIcon，使用通用图标
+		return theme.FileApplicationIcon()
+	case ".txt", ".md", ".log", ".json", ".xml", ".yaml", ".yml", ".ini", ".cfg":
+		return theme.FileTextIcon()
+	default:
+		return theme.FileIcon()
+	}
 }
 
 // formatBytes 格式化字节大小为可读的字符串
