@@ -6,9 +6,6 @@
   <component name="ChangeListManager">
     <list default="true" id="7572115f-c3a7-4634-92a7-8f05fd5b61ee" name="更改" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/ui/buckets_view.go" beforeDir="false" afterPath="$PROJECT_DIR$/ui/buckets_view.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/ui/objects_view.go" beforeDir="false" afterPath="$PROJECT_DIR$/ui/objects_view.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/ui/services_view.go" beforeDir="false" afterPath="$PROJECT_DIR$/ui/services_view.go" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -17,6 +14,19 @@
   </component>
   <component name="GOROOT" url="file://$PROJECT_DIR$/../../../SDK/Go" />
   <component name="Git.Settings">
+    <excluded-from-favorite>
+      <branch-storage>
+        <map>
+          <entry type="LOCAL">
+            <value>
+              <list>
+                <branch-info repo="$PROJECT_DIR$" source="master" />
+              </list>
+            </value>
+          </entry>
+        </map>
+      </branch-storage>
+    </excluded-from-favorite>
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
   <component name="ProjectColorInfo">{
