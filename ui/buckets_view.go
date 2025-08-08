@@ -7,6 +7,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -16,11 +17,12 @@ import (
 // BucketsView 结构体用于管理中间的存储桶列表视图
 type BucketsView struct {
 	window           fyne.Window
-	S3Client         *s3client.S3Client // 修正：改为大写 S3Client，使其可导出
-	bucketList       *widget.List       // 用于显示存储桶列表的 Fyne 列表组件
-	buckets          []string           // 存储桶名称列表
-	selectedBucketID widget.ListItemID  // 存储当前选中的存储桶 ID
-	deleteButton     *widget.Button     // 删除按钮，用于控制启用/禁用状态
+	S3Client         *s3client.S3Client          // 修正：改为大写 S3Client，使其可导出
+	bucketList       *widget.List                // 用于显示存储桶列表的 Fyne 列表组件
+	buckets          []string                    // 存储桶名称列表
+	selectedBucketID widget.ListItemID           // 存储当前选中的存储桶 ID
+	deleteButton     *widget.Button              // 删除按钮，用于控制启用/禁用状态
+	loadingIndicator *widget.ProgressBarInfinite // 加载指示器
 
 	// OnBucketSelected 是一个回调函数，当用户选择一个存储桶时触发
 	// 参数是选中的存储桶名称
@@ -31,8 +33,10 @@ type BucketsView struct {
 func NewBucketsView(w fyne.Window) *BucketsView {
 	bv := &BucketsView{
 		window:           w,
-		selectedBucketID: -1, // 初始状态为未选中
+		selectedBucketID: -1,                              // 初始状态为未选中
+		loadingIndicator: widget.NewProgressBarInfinite(), // 初始化加载指示器
 	}
+	bv.loadingIndicator.Hide() // 默认隐藏
 	return bv
 }
 
@@ -51,10 +55,12 @@ func (bv *BucketsView) loadBuckets() {
 		return
 	}
 
+	bv.loadingIndicator.Show() // 显示加载指示器
 	go func() {
 		buckets, err := bv.S3Client.ListBuckets() // 修正：使用大写 S3Client
 		// 所有 UI 更新都必须在 Fyne 主线程中执行
 		fyne.Do(func() {
+			bv.loadingIndicator.Hide() // 隐藏加载指示器
 			if err != nil {
 				log.Printf("列出存储桶失败: %v", err)
 				dialog.ShowError(fmt.Errorf("列出存储桶失败: %v", err), bv.window)
@@ -193,12 +199,14 @@ func (bv *BucketsView) GetContent() fyne.CanvasObject {
 	})
 	bv.deleteButton.Disable() // 初始状态为禁用
 
-	// 按钮布局：与服务列表类似，垂直堆叠
-	buttonBox := container.NewVBox(
+	// 按钮布局：水平排列，放置在列表上方
+	buttonBox := container.NewHBox(
 		createBucketButton,
 		bv.deleteButton,
+		layout.NewSpacer(),  // 将按钮推到左侧
+		bv.loadingIndicator, // 加载指示器
 	)
 
-	// 整体布局：存储桶列表 + 按钮
-	return container.NewBorder(nil, buttonBox, nil, nil, bv.bucketList)
+	// 整体布局：按钮 + 分隔符 + 存储桶列表
+	return container.NewBorder(buttonBox, nil, nil, nil, container.NewVBox(widget.NewSeparator()), bv.bucketList)
 }

@@ -25,17 +25,20 @@ type ObjectsView struct {
 	currentBucket       string
 	currentPrefix       string // 当前路径，例如 "folder1/subfolder/"
 	objects             []s3client.S3Object
-	objectList          *widget.List      // 用于显示文件/文件夹列表的 Fyne 列表组件
-	breadcrumbContainer *fyne.Container   // 面包屑容器
-	selectedObjectID    widget.ListItemID // 存储当前选中的对象 ID
+	objectList          *widget.List                // 用于显示文件/文件夹列表的 Fyne 列表组件
+	breadcrumbContainer *fyne.Container             // 面包屑容器
+	selectedObjectID    widget.ListItemID           // 存储当前选中的对象 ID
+	loadingIndicator    *widget.ProgressBarInfinite // 加载指示器
 }
 
 // NewObjectsView 创建并返回一个新的 ObjectsView 实例
 func NewObjectsView(w fyne.Window) *ObjectsView {
 	ov := &ObjectsView{
 		window:           w,
-		selectedObjectID: -1, // 初始状态为未选中
+		selectedObjectID: -1,                              // 初始状态为未选中
+		loadingIndicator: widget.NewProgressBarInfinite(), // 初始化加载指示器
 	}
+	ov.loadingIndicator.Hide() // 默认隐藏
 	return ov
 }
 
@@ -56,9 +59,11 @@ func (ov *ObjectsView) loadObjects() {
 		return
 	}
 
+	ov.loadingIndicator.Show() // 显示加载指示器
 	go func() {
 		objects, err := ov.s3Client.ListObjects(ov.currentBucket, ov.currentPrefix)
 		fyne.Do(func() {
+			ov.loadingIndicator.Hide() // 隐藏加载指示器
 			if err != nil {
 				log.Printf("列出对象失败: %v", err)
 				dialog.ShowError(fmt.Errorf("列出对象失败: %v", err), ov.window)
@@ -117,7 +122,9 @@ func (ov *ObjectsView) updateBreadcrumbs() {
 // GetContent 返回 ObjectsView 的 Fyne UI 内容
 func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 	ov.objectList = widget.NewList(
-		func() int { return len(ov.objects) },
+		func() int {
+			return len(ov.objects)
+		},
 		func() fyne.CanvasObject {
 			// 列表项模板：图标 + 名称 + 大小/修改时间
 			return container.NewHBox(
@@ -298,8 +305,8 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 	// 顶部操作栏：面包屑 + 操作按钮
 	topBar := container.NewBorder(nil, nil, ov.breadcrumbContainer, fileOpsButtons, nil)
 
-	// 整体布局：顶部操作栏 + 文件列表
-	return container.NewBorder(topBar, nil, nil, nil, ov.objectList)
+	// 整体布局：顶部操作栏 + 分隔符 + 文件列表
+	return container.NewBorder(topBar, nil, nil, nil, container.NewVBox(widget.NewSeparator()), ov.objectList)
 }
 
 // formatBytes 格式化字节大小为可读的字符串

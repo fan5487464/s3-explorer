@@ -16,10 +16,11 @@ import (
 
 // ServicesView 结构体用于管理左侧的服务列表视图
 type ServicesView struct {
-	window          fyne.Window
-	configStore     *config.ConfigStore
-	serviceList *widget.List // 用于显示 S3 服务列表的 Fyne 列表组件
-	selectedServiceID widget.ListItemID // 存储当前选中的服务 ID
+	window            fyne.Window
+	configStore       *config.ConfigStore
+	serviceList       *widget.List                // 用于显示 S3 服务列表的 Fyne 列表组件
+	selectedServiceID widget.ListItemID           // 存储当前选中的服务 ID
+	loadingIndicator  *widget.ProgressBarInfinite // 加载指示器
 
 	// onServiceSelected 是一个回调函数，当用户选择一个服务时触发
 	// 参数是选中的服务配置
@@ -29,23 +30,33 @@ type ServicesView struct {
 // NewServicesView 创建并返回一个新的 ServicesView 实例
 func NewServicesView(w fyne.Window) *ServicesView {
 	sv := &ServicesView{
-		window:          w,
-		selectedServiceID: -1, // 初始状态为未选中
+		window:            w,
+		selectedServiceID: -1,                              // 初始状态为未选中
+		loadingIndicator:  widget.NewProgressBarInfinite(), // 初始化加载指示器
 	}
-	sv.loadConfig() // 加载配置
+	sv.loadingIndicator.Hide() // 默认隐藏
+	sv.loadConfig()            // 加载配置
 	return sv
 }
 
 // loadConfig 加载 S3 服务配置
 func (sv *ServicesView) loadConfig() {
-	store, err := config.LoadConfig()
-	if err != nil {
-		log.Printf("加载配置失败: %v", err)
-		// 如果加载失败，初始化一个空的配置存储
-		sv.configStore = &config.ConfigStore{Services: []config.S3ServiceConfig{}}
-		return
-	}
-	sv.configStore = store
+	sv.loadingIndicator.Show() // 显示加载指示器
+	go func() {
+		store, err := config.LoadConfig()
+		fyne.Do(func() {
+			sv.loadingIndicator.Hide() // 隐藏加载指示器
+			if err != nil {
+				log.Printf("加载配置失败: %v", err)
+				// 如果加载失败，初始化一个空的配置存储
+				sv.configStore = &config.ConfigStore{Services: []config.S3ServiceConfig{}}
+				dialog.ShowError(fmt.Errorf("加载配置失败: %v", err), sv.window)
+				return
+			}
+			sv.configStore = store
+			sv.refreshServiceList()
+		})
+	}()
 }
 
 // saveConfig 保存 S3 服务配置
@@ -97,6 +108,10 @@ func (sv *ServicesView) createServiceFormContent(service *config.S3ServiceConfig
 func (sv *ServicesView) GetContent() fyne.CanvasObject {
 	sv.serviceList = widget.NewList(
 		func() int {
+			// 确保 configStore 不为 nil
+			if sv.configStore == nil {
+				return 0
+			}
 			return len(sv.configStore.Services)
 		},
 		func() fyne.CanvasObject {
@@ -104,6 +119,10 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
 			// 更新列表项内容
+			// 每次都重新检查长度，确保在并发操作下不会越界
+			if sv.configStore == nil || id < 0 || id >= len(sv.configStore.Services) {
+				return
+			}
 			label := obj.(*widget.Label)
 			label.SetText(sv.configStore.Services[id].Alias)
 		},
@@ -113,7 +132,10 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 	sv.serviceList.OnSelected = func(id widget.ListItemID) {
 		sv.selectedServiceID = id // 记录选中的 ID
 		if sv.OnServiceSelected != nil {
-			sv.OnServiceSelected(sv.configStore.Services[id])
+			// 再次检查长度，确保在并发操作下不会越界
+			if sv.configStore != nil && id >= 0 && id < len(sv.configStore.Services) {
+				sv.OnServiceSelected(sv.configStore.Services[id])
+			}
 		}
 	}
 
@@ -195,13 +217,15 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 		}, sv.window)
 	})
 
-	// 按钮布局：垂直堆叠
-	buttonBox := container.NewVBox(
+	// 按钮布局：水平排列，放置在列表上方
+	buttonBox := container.NewHBox(
 		addButton,
 		editButton,
 		deleteButton,
+		layout.NewSpacer(),  // 将按钮推到左侧
+		sv.loadingIndicator, // 加载指示器
 	)
 
-	// 整体布局：服务列表 + 按钮
-	return container.NewBorder(nil, buttonBox, nil, nil, sv.serviceList)
+	// 整体布局：按钮 + 分隔符 + 服务列表
+	return container.NewBorder(buttonBox, nil, nil, nil, container.NewVBox(widget.NewSeparator()), sv.serviceList)
 }
