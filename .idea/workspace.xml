@@ -4,9 +4,7 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="7572115f-c3a7-4634-92a7-8f05fd5b61ee" name="更改" comment="">
-      <change beforePath="$PROJECT_DIR$/ui/objects_view.go" beforeDir="false" afterPath="$PROJECT_DIR$/ui/objects_view.go" afterDir="false" />
-    </list>
+    <list default="true" id="7572115f-c3a7-4634-92a7-8f05fd5b61ee" name="更改" comment="" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />

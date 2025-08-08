@@ -204,6 +204,25 @@ func (sc *S3Client) IsBucketEmpty(bucketName string) (bool, error) {
 	return len(output.Contents) == 0 && len(output.CommonPrefixes) == 0, nil
 }
 
+// CreateFolder 在 S3 中创建一个文件夹（即一个以 / 结尾的 0 字节对象）
+func (sc *S3Client) CreateFolder(bucketName, key string) error {
+	// 确保 key 以 / 结尾
+	if !strings.HasSuffix(key, "/") {
+		key += "/"
+	}
+
+	_, err := sc.client.PutObject(context.TODO(), &s3.PutObjectInput{
+		Bucket: aws.String(bucketName),
+		Key:    aws.String(key),
+		Body:   strings.NewReader(""), // 空内容
+	})
+
+	if err != nil {
+		return fmt.Errorf("创建文件夹失败: %w", err)
+	}
+	return nil
+}
+
 // ListAllObjectsUnderPrefix 递归地列出指定前缀下的所有对象（仅文件）
 func (sc *S3Client) ListAllObjectsUnderPrefix(bucketName, prefix string) ([]S3Object, error) {
 	var objects []S3Object

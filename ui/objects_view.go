@@ -444,6 +444,40 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 	ov.breadcrumbContainer = container.NewHBox()
 	ov.updateBreadcrumbs()
 
+	createFolderButton := widget.NewButtonWithIcon("创建文件夹", theme.FolderNewIcon(), func() {
+		if ov.s3Client == nil || ov.currentBucket == "" {
+			dialog.ShowInformation("提示", "请先选择一个 S3 服务和存储桶。", ov.window)
+			return
+		}
+
+		entry := widget.NewEntry()
+		dialog.ShowForm("创建新文件夹", "创建", "取消", []*widget.FormItem{
+			widget.NewFormItem("文件夹名称", entry),
+		}, func(confirmed bool) {
+			if confirmed {
+				folderName := entry.Text
+				if folderName == "" {
+					dialog.ShowInformation("提示", "文件夹名称不能为空。", ov.window)
+					return
+				}
+				// S3 中的文件夹 key 是当前前缀 + 文件夹名 + /
+				s3Key := ov.currentPrefix + folderName + "/"
+
+				go func() {
+					err := ov.s3Client.CreateFolder(ov.currentBucket, s3Key)
+					fyne.Do(func() {
+						if err != nil {
+							dialog.ShowError(fmt.Errorf("创建文件夹失败: %v", err), ov.window)
+						} else {
+							dialog.ShowInformation("成功", fmt.Sprintf("文件夹 '%s' 创建成功！", folderName), ov.window)
+							ov.loadObjects() // 刷新列表
+						}
+					})
+				}()
+			}
+		}, ov.window)
+	})
+
 	uploadButton := widget.NewButtonWithIcon("上传", theme.ContentAddIcon(), func() {
 		if ov.s3Client == nil || ov.currentBucket == "" {
 			dialog.ShowInformation("提示", "请先选择一个 S3 服务和存储桶。", ov.window)
@@ -553,7 +587,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 	})
 	ov.updateButtonsState()
 
-	fileOpsButtons := container.NewHBox(uploadButton, ov.downloadButton, ov.deleteButton)
+	fileOpsButtons := container.NewHBox(createFolderButton, uploadButton, ov.downloadButton, ov.deleteButton)
 
 	topBar := container.NewBorder(nil, nil, ov.breadcrumbContainer, fileOpsButtons, nil)
 
