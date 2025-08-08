@@ -2,9 +2,11 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 	"log"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
@@ -14,6 +16,54 @@ import (
 	"s3-explorer/config" // 导入我们之前创建的 config 包
 )
 
+// serviceListEntry 是服务列表的自定义列表项
+type serviceListEntry struct {
+	widget.BaseWidget
+	label    *widget.Label
+	id       widget.ListItemID
+	sv       *ServicesView
+	selected bool
+}
+
+func (e *serviceListEntry) Tapped(_ *fyne.PointEvent) {
+	e.sv.handleServiceTapped(e.id)
+}
+
+func (e *serviceListEntry) CreateRenderer() fyne.WidgetRenderer {
+	bg := canvas.NewRectangle(color.Transparent)
+	return &serviceListEntryRenderer{
+		entry:      e,
+		background: bg,
+		content:    container.NewStack(bg, e.label),
+	}
+}
+
+// serviceListEntryRenderer 自定义渲染器
+type serviceListEntryRenderer struct {
+	entry      *serviceListEntry
+	background *canvas.Rectangle
+	content    *fyne.Container
+}
+
+func (r *serviceListEntryRenderer) Destroy() {}
+func (r *serviceListEntryRenderer) Layout(s fyne.Size) {
+	r.content.Resize(s)
+}
+func (r *serviceListEntryRenderer) MinSize() fyne.Size {
+	return r.content.MinSize()
+}
+func (r *serviceListEntryRenderer) Objects() []fyne.CanvasObject {
+	return []fyne.CanvasObject{r.content}
+}
+func (r *serviceListEntryRenderer) Refresh() {
+	if r.entry.selected {
+		r.background.FillColor = theme.SelectionColor()
+	} else {
+		r.background.FillColor = color.Transparent
+	}
+	r.background.Refresh()
+}
+
 // ServicesView 结构体用于管理左侧的服务列表视图
 type ServicesView struct {
 	window            fyne.Window
@@ -22,8 +72,6 @@ type ServicesView struct {
 	selectedServiceID widget.ListItemID           // 存储当前选中的服务 ID
 	loadingIndicator  *widget.ProgressBarInfinite // 加载指示器
 
-	// onServiceSelected 是一个回调函数，当用户选择一个服务时触发
-	// 参数是选中的服务配置
 	OnServiceSelected func(svc config.S3ServiceConfig)
 }
 
@@ -39,6 +87,26 @@ func NewServicesView(w fyne.Window) *ServicesView {
 	return sv
 }
 
+func (sv *ServicesView) handleServiceTapped(id widget.ListItemID) {
+	// 如果点击的是已选中的项，则取消选择
+	if sv.selectedServiceID == id {
+		sv.selectedServiceID = -1
+		if sv.OnServiceSelected != nil {
+			// 传递一个空的服务配置来清空后续视图
+			sv.OnServiceSelected(config.S3ServiceConfig{})
+		}
+	} else {
+		// 否则，选中新点击的项
+		sv.selectedServiceID = id // 记录选中的 ID
+		if sv.OnServiceSelected != nil {
+			if sv.configStore != nil && id >= 0 && id < len(sv.configStore.Services) {
+				sv.OnServiceSelected(sv.configStore.Services[id])
+			}
+		}
+	}
+	sv.serviceList.Refresh() // 刷新列表以更新视觉效果
+}
+
 // loadConfig 加载 S3 服务配置
 func (sv *ServicesView) loadConfig() {
 	sv.loadingIndicator.Show() // 显示加载指示器
@@ -48,7 +116,6 @@ func (sv *ServicesView) loadConfig() {
 			sv.loadingIndicator.Hide() // 隐藏加载指示器
 			if err != nil {
 				log.Printf("加载配置失败: %v", err)
-				// 如果加载失败，初始化一个空的配置存储
 				sv.configStore = &config.ConfigStore{Services: []config.S3ServiceConfig{}}
 				dialog.ShowError(fmt.Errorf("加载配置失败: %v", err), sv.window)
 				return
@@ -69,7 +136,6 @@ func (sv *ServicesView) saveConfig() {
 
 // refreshServiceList 刷新服务列表显示
 func (sv *ServicesView) refreshServiceList() {
-	// 如果 serviceList 还没有初始化，则不执行刷新
 	if sv.serviceList == nil {
 		return
 	}
@@ -77,16 +143,14 @@ func (sv *ServicesView) refreshServiceList() {
 }
 
 // createServiceFormContent 创建一个用于添加/编辑服务配置的表单内容
-// 返回表单的 Fyne UI 内容和各个输入框的引用
 func (sv *ServicesView) createServiceFormContent(service *config.S3ServiceConfig) (fyne.CanvasObject, *widget.Entry, *widget.Entry, *widget.Entry, *widget.Entry) {
 	aliasEntry := widget.NewEntry()
 	aliasEntry.SetPlaceHolder("例如：我的Minio")
 	endpointEntry := widget.NewEntry()
 	endpointEntry.SetPlaceHolder("例如：http://localhost:9000")
 	accessKeyEntry := widget.NewEntry()
-	secretKeyEntry := widget.NewPasswordEntry() // 密码输入框
+	secretKeyEntry := widget.NewPasswordEntry()
 
-	// 如果是编辑模式，填充现有数据
 	if service != nil {
 		aliasEntry.SetText(service.Alias)
 		endpointEntry.SetText(service.Endpoint)
@@ -94,7 +158,6 @@ func (sv *ServicesView) createServiceFormContent(service *config.S3ServiceConfig
 		secretKeyEntry.SetText(service.SecretKey)
 	}
 
-	// 使用 layout.NewFormLayout() 创建响应式表单布局
 	formContent := container.New(layout.NewFormLayout(),
 		widget.NewLabel("别名:"), aliasEntry,
 		widget.NewLabel("Endpoint:"), endpointEntry,
@@ -108,40 +171,31 @@ func (sv *ServicesView) createServiceFormContent(service *config.S3ServiceConfig
 func (sv *ServicesView) GetContent() fyne.CanvasObject {
 	sv.serviceList = widget.NewList(
 		func() int {
-			// 确保 configStore 不为 nil
 			if sv.configStore == nil {
 				return 0
 			}
 			return len(sv.configStore.Services)
 		},
 		func() fyne.CanvasObject {
-			return widget.NewLabel("服务别名") // 列表项的模板
+			entry := &serviceListEntry{
+				label: widget.NewLabel("服务别名"),
+				sv:    sv,
+			}
+			entry.ExtendBaseWidget(entry)
+			return entry
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
-			// 更新列表项内容
-			// 每次都重新检查长度，确保在并发操作下不会越界
-			if sv.configStore == nil || id < 0 || id >= len(sv.configStore.Services) {
-				return
-			}
-			label := obj.(*widget.Label)
-			label.SetText(sv.configStore.Services[id].Alias)
+			entry := obj.(*serviceListEntry)
+			entry.id = id
+			entry.label.SetText(sv.configStore.Services[id].Alias)
+			entry.selected = sv.selectedServiceID == id
+			entry.Refresh()
 		},
 	)
 
-	// 设置列表项点击事件 (左键)
-	sv.serviceList.OnSelected = func(id widget.ListItemID) {
-		sv.selectedServiceID = id // 记录选中的 ID
-		if sv.OnServiceSelected != nil {
-			// 再次检查长度，确保在并发操作下不会越界
-			if sv.configStore != nil && id >= 0 && id < len(sv.configStore.Services) {
-				sv.OnServiceSelected(sv.configStore.Services[id])
-			}
-		}
-	}
-
-	// 添加服务按钮 (只显示图标)
+	// 添加服务按钮
 	addButton := widget.NewButtonWithIcon("", theme.ContentAddIcon(), func() {
-		formContent, aliasEntry, endpointEntry, accessKeyEntry, secretKeyEntry := sv.createServiceFormContent(nil) // nil 表示添加新服务
+		formContent, aliasEntry, endpointEntry, accessKeyEntry, secretKeyEntry := sv.createServiceFormContent(nil)
 		d := dialog.NewCustomConfirm("添加 S3 服务", "添加", "取消", formContent, func(confirmed bool) {
 			if confirmed {
 				newService := config.S3ServiceConfig{
@@ -150,29 +204,27 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 					AccessKey: accessKeyEntry.Text,
 					SecretKey: secretKeyEntry.Text,
 				}
-				// 验证输入
 				if newService.Alias == "" || newService.Endpoint == "" || newService.AccessKey == "" || newService.SecretKey == "" {
 					dialog.ShowInformation("提示", "所有字段都不能为空！", sv.window)
-					return // 不保存，并保持对话框打开
+					return
 				}
-
 				sv.configStore.AddService(newService)
 				sv.saveConfig()
 				sv.refreshServiceList()
 			}
 		}, sv.window)
-		d.Resize(fyne.NewSize(400, 250)) // 设置对话框的最小尺寸
+		d.Resize(fyne.NewSize(400, 250))
 		d.Show()
 	})
 
-	// 编辑服务按钮 (只显示图标)
+	// 编辑服务按钮
 	editButton := widget.NewButtonWithIcon("", theme.DocumentCreateIcon(), func() {
 		if sv.selectedServiceID == -1 || sv.selectedServiceID >= len(sv.configStore.Services) {
 			dialog.ShowInformation("提示", "请先选择一个要编辑的服务。", sv.window)
 			return
 		}
 		selectedService := sv.configStore.Services[sv.selectedServiceID]
-		formContent, aliasEntry, endpointEntry, accessKeyEntry, secretKeyEntry := sv.createServiceFormContent(&selectedService) // 传入选中的服务进行编辑
+		formContent, aliasEntry, endpointEntry, accessKeyEntry, secretKeyEntry := sv.createServiceFormContent(&selectedService)
 		d := dialog.NewCustomConfirm("编辑 S3 服务", "保存", "取消", formContent, func(confirmed bool) {
 			if confirmed {
 				newService := config.S3ServiceConfig{
@@ -181,22 +233,20 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 					AccessKey: accessKeyEntry.Text,
 					SecretKey: secretKeyEntry.Text,
 				}
-				// 验证输入
 				if newService.Alias == "" || newService.Endpoint == "" || newService.AccessKey == "" || newService.SecretKey == "" {
 					dialog.ShowInformation("提示", "所有字段都不能为空！", sv.window)
-					return // 不保存，并保持对话框打开
+					return
 				}
-
 				sv.configStore.UpdateService(selectedService.Alias, newService)
 				sv.saveConfig()
 				sv.refreshServiceList()
 			}
 		}, sv.window)
-		d.Resize(fyne.NewSize(400, 250)) // 设置对话框的最小尺寸
+		d.Resize(fyne.NewSize(400, 250))
 		d.Show()
 	})
 
-	// 删除服务按钮 (只显示图标)
+	// 删除服务按钮
 	deleteButton := widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {
 		if sv.selectedServiceID == -1 || sv.selectedServiceID >= len(sv.configStore.Services) {
 			dialog.ShowInformation("提示", "请先选择一个要删除的服务。", sv.window)
@@ -209,23 +259,21 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 				sv.configStore.DeleteService(selectedService.Alias)
 				sv.saveConfig()
 				sv.refreshServiceList()
-				// 删除后取消选中，避免索引越界
-				sv.serviceList.UnselectAll()
 				sv.selectedServiceID = -1 // 重置选中 ID
-				// TODO: 通知中间和右侧视图清空内容
+				if sv.OnServiceSelected != nil {
+					sv.OnServiceSelected(config.S3ServiceConfig{})
+				}
 			}
 		}, sv.window)
 	})
 
-	// 按钮布局：水平排列，放置在列表上方
 	buttonBox := container.NewHBox(
 		addButton,
 		editButton,
 		deleteButton,
-		layout.NewSpacer(),  // 将按钮推到左侧
-		sv.loadingIndicator, // 加载指示器
+		layout.NewSpacer(),
+		sv.loadingIndicator,
 	)
 
-	// 整体布局：按钮 + 分隔符 + 服务列表
 	return container.NewBorder(buttonBox, nil, nil, nil, container.NewVBox(widget.NewSeparator()), sv.serviceList)
 }

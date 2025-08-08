@@ -24,6 +24,32 @@ import (
 	"s3-explorer/s3client" // 导入 S3 客户端包
 )
 
+// tappableContainer 是一个可以捕获点击事件的容器
+type tappableContainer struct {
+	widget.BaseWidget
+	content fyne.CanvasObject
+	onTapped func()
+}
+
+func (c *tappableContainer) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(c.content)
+}
+
+func (c *tappableContainer) Tapped(_ *fyne.PointEvent) {
+	if c.onTapped != nil {
+		c.onTapped()
+	}
+}
+
+func newTappableContainer(content fyne.CanvasObject, onTapped func()) *tappableContainer {
+	c := &tappableContainer{
+		content:  content,
+		onTapped: onTapped,
+	}
+	c.ExtendBaseWidget(c)
+	return c
+}
+
 // listEntry 是一个自定义的列表项组件，用于处理双击和带修饰键的点击
 type listEntry struct {
 	widget.BaseWidget
@@ -238,10 +264,17 @@ func (ov *ObjectsView) handleItemClick(id widget.ListItemID, m *desktop.MouseEve
 	shift := m.Modifier&desktop.ShiftModifier != 0
 
 	if !ctrl && !shift {
-		// 普通单击：清空现有选择，并选中当前项
-		ov.selectedObjectIDs = make(map[widget.ListItemID]struct{})
-		ov.selectedObjectIDs[id] = struct{}{}
-		ov.lastSelectedID = id
+		// 普通单击
+		// 如果只选中了当前项，则取消选择
+		if _, selected := ov.selectedObjectIDs[id]; selected && len(ov.selectedObjectIDs) == 1 {
+			ov.selectedObjectIDs = make(map[widget.ListItemID]struct{})
+			ov.lastSelectedID = -1
+		} else {
+			// 否则，清空现有选择，并选中当前项
+			ov.selectedObjectIDs = make(map[widget.ListItemID]struct{})
+			ov.selectedObjectIDs[id] = struct{}{}
+			ov.lastSelectedID = id
+		}
 	} else if ctrl {
 		// Ctrl/Cmd + 单击：切换选中状态
 		if _, selected := ov.selectedObjectIDs[id]; selected {
@@ -257,8 +290,6 @@ func (ov *ObjectsView) handleItemClick(id widget.ListItemID, m *desktop.MouseEve
 			ov.selectedObjectIDs[id] = struct{}{}
 			ov.lastSelectedID = id
 		} else {
-			// 清空当前选择，然后重新计算范围选择
-			ov.selectedObjectIDs = make(map[widget.ListItemID]struct{})
 			start, end := ov.lastSelectedID, id
 			if start > end {
 				start, end = end, start
@@ -270,6 +301,16 @@ func (ov *ObjectsView) handleItemClick(id widget.ListItemID, m *desktop.MouseEve
 	}
 	ov.objectList.Refresh() // 刷新列表以更新视觉效果
 	ov.updateButtonsState()
+}
+
+// unselectAllObjects 取消所有对象的选择
+func (ov *ObjectsView) unselectAllObjects() {
+	if len(ov.selectedObjectIDs) > 0 {
+		ov.selectedObjectIDs = make(map[widget.ListItemID]struct{})
+		ov.lastSelectedID = -1
+		ov.objectList.Refresh()
+		ov.updateButtonsState()
+	}
 }
 
 // updateButtonsState 根据当前选择状态更新按钮的可用性
@@ -332,6 +373,9 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 			entry.Refresh()
 		},
 	)
+
+	// 将列表放入可点击的容器中，以捕获空白区域的点击
+	listContainer := newTappableContainer(ov.objectList, ov.unselectAllObjects)
 
 	// 面包屑容器
 	ov.breadcrumbContainer = container.NewHBox()
@@ -469,7 +513,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 	)
 
 	// 整体布局：顶部操作栏 + 分隔符 + 文件列表
-	return container.NewBorder(topBar, nil, nil, nil, container.NewVBox(widget.NewSeparator()), ov.objectList)
+	return container.NewBorder(topBar, nil, nil, nil, container.NewVBox(widget.NewSeparator()), listContainer)
 }
 
 // startDownloadProcess 启动下载流程

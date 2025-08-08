@@ -80,6 +80,13 @@ func main() {
 	// 设置 ServicesView 的回调函数，当选中服务时，更新 BucketsView
 	servicesView := ui.NewServicesView(w)
 	servicesView.OnServiceSelected = func(svc config.S3ServiceConfig) {
+		// 如果传入的 svc 是空的（表示取消选择），则清空后续视图
+		if svc.Alias == "" && svc.Endpoint == "" && svc.AccessKey == "" {
+			bucketsView.SetS3Client(nil)
+			objectsView.SetBucketAndPrefix(nil, "", "")
+			return
+		}
+
 		client, err := s3client.NewS3Client(svc)
 		if err != nil {
 			log.Printf("创建 S3 客户端失败: %v", err)
