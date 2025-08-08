@@ -3,16 +3,17 @@ package config
 import (
 	"encoding/json" // 导入 json 包用于 JSON 序列化和反序列化
 	"io/ioutil"     // 导入 ioutil 包用于文件读写
+	"log"
 	"os"            // 导入 os 包用于文件系统操作
 	"path/filepath" // 导入 path/filepath 包用于路径操作
 )
 
 // S3ServiceConfig 定义单个 S3 服务的配置信息
 type S3ServiceConfig struct {
-	Alias     string `json:"alias"`      // 服务别名，用于显示
-	Endpoint  string `json:"endpoint"`   // S3 服务地址，例如："s3.amazonaws.com" 或 "localhost:9000"
-	AccessKey string `json:"accessKey"`  // 访问密钥 ID
-	SecretKey string `json:"secretKey"`  // 秘密访问密钥
+	Alias     string `json:"alias"`     // 服务别名，用于显示
+	Endpoint  string `json:"endpoint"`  // S3 服务地址，例如："s3.amazonaws.com" 或 "localhost:9000"
+	AccessKey string `json:"accessKey"` // 访问密钥 ID
+	SecretKey string `json:"secretKey"` // 秘密访问密钥
 }
 
 // ConfigStore 存储所有 S3 服务的配置列表
@@ -33,6 +34,7 @@ func configFilePath() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	log.Println("appConfigDir:", appConfigDir)
 	return filepath.Join(appConfigDir, "servers.json"), nil
 }
 
