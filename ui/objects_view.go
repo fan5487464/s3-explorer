@@ -3,21 +3,20 @@ package ui
 import (
 	"fmt"
 	"image/color"
-	"os"
-	"strconv"
-
-	"fyne.io/fyne/v2/canvas"
-	"fyne.io/fyne/v2/driver/desktop"
 	"io"
 	"io/ioutil"
 	"log"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -28,7 +27,7 @@ import (
 // tappableContainer 是一个可以捕获点击事件的容器
 type tappableContainer struct {
 	widget.BaseWidget
-	content fyne.CanvasObject
+	content  fyne.CanvasObject
 	onTapped func()
 }
 
@@ -62,14 +61,14 @@ type listEntry struct {
 	ov *ObjectsView // 指向父视图的引用
 
 	doubleTapped func()
-	selected bool
+	selected     bool
 }
 
 // listEntryRenderer 自定义渲染器
 type listEntryRenderer struct {
-	entry       *listEntry
-	background  *canvas.Rectangle
-	content     *fyne.Container
+	entry      *listEntry
+	background *canvas.Rectangle
+	content    *fyne.Container
 }
 
 func (r *listEntryRenderer) Destroy() {}
@@ -107,9 +106,9 @@ func (e *listEntry) CreateRenderer() fyne.WidgetRenderer {
 		e.infoLabel,
 	)
 	return &listEntryRenderer{
-		entry:       e,
-		background:  bg,
-		content:     content,
+		entry:      e,
+		background: bg,
+		content:    content,
 	}
 }
 
@@ -153,17 +152,17 @@ type ObjectsView struct {
 	loadingIndicator    *widget.ProgressBarInfinite // 加载指示器
 	downloadButton      *widget.Button
 	deleteButton        *widget.Button
-	serviceInfoLabel    *widget.Label // 用于显示当前服务信息的标签
+	serviceInfoButton   *widget.Button // 用于显示当前服务信息的按钮（模拟标签）
 
 	// 分页相关状态
-	currentPage       int
-	pageSize          int
-	pageMarkers       []string // 存储每一页的起始 marker
-	nextPageMarker    *string
-	prevButton        *widget.Button
-	nextButton        *widget.Button
-	pageInfoLabel     *widget.Label
-	pageSizeEntry     *widget.Entry
+	currentPage    int
+	pageSize       int
+	pageMarkers    []string // 存储每一页的起始 marker
+	nextPageMarker *string
+	prevButton     *widget.Button
+	nextButton     *widget.Button
+	pageInfoLabel  *widget.Label
+	pageSizeEntry  *widget.Entry
 }
 
 // NewObjectsView 创建并返回一个新的 ObjectsView 实例
@@ -173,12 +172,13 @@ func NewObjectsView(w fyne.Window) *ObjectsView {
 		selectedObjectIDs: make(map[widget.ListItemID]struct{}),
 		lastSelectedID:    -1,
 		loadingIndicator:  widget.NewProgressBarInfinite(),
-		serviceInfoLabel:  widget.NewLabel("未选择服务"),
+		serviceInfoButton: widget.NewButton("未选择服务", func() {}), // 修复：添加空的回调函数
 		currentPage:       1,
 		pageSize:          100, // 默认每页 100 条
 		pageMarkers:       []string{""}, // 第1页的 marker 是空字符串
 	}
-	ov.serviceInfoLabel.Alignment = fyne.TextAlignCenter
+	ov.serviceInfoButton.Importance = widget.LowImportance // 减少按钮样式
+	ov.serviceInfoButton.Disable()                       // 禁用按钮以实现灰色不可点击效果
 	ov.loadingIndicator.Hide()
 	return ov
 }
@@ -186,9 +186,9 @@ func NewObjectsView(w fyne.Window) *ObjectsView {
 // SetServiceAlias 设置并显示当前服务的别名
 func (ov *ObjectsView) SetServiceAlias(alias string) {
 	if alias != "" {
-		ov.serviceInfoLabel.SetText(fmt.Sprintf("当前服务: %s", alias))
+		ov.serviceInfoButton.SetText(fmt.Sprintf("当前服务: %s", alias))
 	} else {
-		ov.serviceInfoLabel.SetText("未选择服务")
+		ov.serviceInfoButton.SetText("未选择服务")
 	}
 }
 
@@ -198,7 +198,6 @@ func (ov *ObjectsView) SetBucketAndPrefix(client *s3client.S3Client, bucket, pre
 	ov.currentBucket = bucket
 	ov.currentPrefix = prefix
 
-	// 重置分页和选择状态
 	ov.resetPagingAndSelection()
 	ov.loadObjects()
 	ov.updateBreadcrumbs()
@@ -240,7 +239,6 @@ func (ov *ObjectsView) loadObjects() {
 			} else {
 				ov.objects = objects
 				ov.nextPageMarker = nextMarker
-				// 如果有下一页，并且 markers 数组中还没有记录，则添加
 				if nextMarker != nil && len(ov.pageMarkers) == ov.currentPage {
 					ov.pageMarkers = append(ov.pageMarkers, *nextMarker)
 				}
@@ -471,14 +469,12 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 			return
 		}
 
-		// 弹出文件夹选择对话框
 		dialog.ShowFolderOpen(func(uri fyne.ListableURI, err error) {
 			if err != nil {
 				dialog.ShowError(err, ov.window)
 				return
 			}
 			if uri == nil {
-				// 用户取消了选择
 				return
 			}
 			go ov.startDownloadProcess(uri.Path())
@@ -507,10 +503,6 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 							defer wg.Done()
 							s3Key := selectedObject.Key
 							if selectedObject.IsFolder {
-								// 为了删除文件夹，我们需要删除其下的所有对象
-								// 这是一个复杂操作，S3 本身没有原子性的文件夹删除
-								// 简单起见，我们目前只删除代表文件夹的那个对象（如果存在）
-								// 注意：这通常不会删除文件夹里的内容
 								if !strings.HasSuffix(s3Key, "/") {
 									s3Key += "/"
 								}
@@ -584,18 +576,13 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 	ov.updatePaginationControls()
 
 	// --- 底部状态栏 ---
-	// 创建一个灰色的标签用于显示服务信息
-	serviceInfoLabelContainer := container.NewCenter(ov.serviceInfoLabel)
-	ov.serviceInfoLabel.TextStyle.Italic = true
-
-	statusBar := container.NewBorder(nil, nil, nil, pagingControls, serviceInfoLabelContainer)
+	statusBar := container.NewBorder(nil, nil, ov.serviceInfoButton, pagingControls, nil)
 
 	return container.NewBorder(topBar, statusBar, nil, nil, listContainer)
 }
 
 // startDownloadProcess 启动下载流程
 func (ov *ObjectsView) startDownloadProcess(localBasePath string) {
-	// 显示一个加载对话框
 	progressDialog := dialog.NewProgressInfinite("正在下载", "请稍候...", ov.window)
 	progressDialog.Show()
 	defer progressDialog.Hide()
@@ -606,8 +593,7 @@ func (ov *ObjectsView) startDownloadProcess(localBasePath string) {
 
 	objectsToDownload := make(chan s3client.S3Object, len(ov.selectedObjectIDs))
 
-	// 启动固定数量的 worker goroutine
-	numWorkers := 10 // 可以根据需要调整并发数
+	numWorkers := 10
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 		go func() {
@@ -618,7 +604,6 @@ func (ov *ObjectsView) startDownloadProcess(localBasePath string) {
 		}()
 	}
 
-	// 遍历选中的项目并添加到下载队列
 	for id := range ov.selectedObjectIDs {
 		if id < len(ov.objects) {
 			objectsToDownload <- ov.objects[id]
@@ -640,20 +625,16 @@ func (ov *ObjectsView) startDownloadProcess(localBasePath string) {
 // processDownloadItem 处理单个项目（文件或文件夹）的下载
 func (ov *ObjectsView) processDownloadItem(obj s3client.S3Object, localBasePath string, failedDownloads *[]string, mu *sync.Mutex) {
 	if obj.IsFolder {
-		// 递归下载文件夹
 		ov.downloadFolder(obj, localBasePath, failedDownloads, mu)
 	} else {
-		// 下载单个文件
 		ov.downloadFile(obj, localBasePath, failedDownloads, mu)
 	}
 }
 
 // downloadFile 下载单个文件
 func (ov *ObjectsView) downloadFile(obj s3client.S3Object, localBasePath string, failedDownloads *[]string, mu *sync.Mutex) {
-	// 修正：当直接下载文件时，它的相对路径就是它的名字
 	localPath := filepath.Join(localBasePath, obj.Name)
 
-	// 确保本地目录存在
 	if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
 		log.Printf("创建本地目录失败: %v", err)
 		mu.Lock()
@@ -662,7 +643,6 @@ func (ov *ObjectsView) downloadFile(obj s3client.S3Object, localBasePath string,
 		return
 	}
 
-	// 创建本地文件
 	localFile, err := os.Create(localPath)
 	if err != nil {
 		log.Printf("创建本地文件失败: %v", err)
@@ -673,7 +653,6 @@ func (ov *ObjectsView) downloadFile(obj s3client.S3Object, localBasePath string,
 	}
 	defer localFile.Close()
 
-	// 从 S3 下载
 	body, err := ov.s3Client.DownloadObject(ov.currentBucket, obj.Key)
 	if err != nil {
 		log.Printf("从 S3 下载失败: %v", err)
@@ -684,7 +663,6 @@ func (ov *ObjectsView) downloadFile(obj s3client.S3Object, localBasePath string,
 	}
 	defer body.Close()
 
-	// 写入文件
 	_, err = io.Copy(localFile, body)
 	if err != nil {
 		log.Printf("写入本地文件失败: %v", err)
@@ -696,7 +674,6 @@ func (ov *ObjectsView) downloadFile(obj s3client.S3Object, localBasePath string,
 
 // downloadFolder 递归下载文件夹
 func (ov *ObjectsView) downloadFolder(folder s3client.S3Object, localBasePath string, failedDownloads *[]string, mu *sync.Mutex) {
-	// 获取文件夹下的所有文件
 	objectsToDownload, err := ov.s3Client.ListAllObjectsUnderPrefix(ov.currentBucket, folder.Key)
 	if err != nil {
 		log.Printf("列出文件夹 '%s' 内容失败: %v", folder.Name, err)
@@ -706,26 +683,13 @@ func (ov *ObjectsView) downloadFolder(folder s3client.S3Object, localBasePath st
 		return
 	}
 
-	// 为每个文件启动一个 goroutine 进行下载
 	var wg sync.WaitGroup
 	for _, obj := range objectsToDownload {
 		wg.Add(1)
 		go func(fileToDownload s3client.S3Object) {
 			defer wg.Done()
-			// 计算相对路径，以保持目录结构
-			// folder.Key 是类似 "photos/2024/"
-			// fileToDownload.Key 是类似 "photos/2024/image1.jpg"
-			// 我们需要得到 "image1.jpg"
 			relativePath := strings.TrimPrefix(fileToDownload.Key, folder.Key)
-
-			// 构建完整的本地保存路径
-			// localBasePath 是用户选择的目录，例如 "/Users/me/Downloads"
-			// folder.Name 是 "2024"
-			// relativePath 是 "image1.jpg"
-			// 最终路径是 "/Users/me/Downloads/2024/image1.jpg"
 			localPath := filepath.Join(localBasePath, folder.Name, relativePath)
-
-			// 下载这个文件，它的逻辑名称是它的相对路径
 			ov.downloadFile(s3client.S3Object{Name: filepath.Base(localPath), Key: fileToDownload.Key}, filepath.Dir(localPath), failedDownloads, mu)
 		}(obj)
 	}
@@ -734,21 +698,15 @@ func (ov *ObjectsView) downloadFolder(folder s3client.S3Object, localBasePath st
 
 // getIconForFile 根据文件名返回对应的图标
 func getIconForFile(name string) fyne.Resource {
-	// 注意：Fyne v2.6.2 的内置主题图标比较有限。
-	// 这里我们使用该版本支持的图标，对于不支持的类型，统一回退到通用文件图标。
 	ext := strings.ToLower(filepath.Ext(name))
 	switch ext {
 	case ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg", ".webp":
-		// v2.6.2 中没有 FileImageIcon，使用通用图标
 		return theme.FileIcon()
 	case ".mp3", ".wav", ".ogg", ".flac":
-		// v2.6.2 中没有 FileAudioIcon，使用通用图标
 		return theme.FileIcon()
 	case ".mp4", ".avi", ".mov", ".mkv", ".webm":
-		// v2.6.2 中没有 FileVideoIcon，使用通用图标
 		return theme.FileIcon()
 	case ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2":
-		// v2.6.2 中没有 FileArchiveIcon，使用通用图标
 		return theme.FileIcon()
 	case ".txt", ".md", ".log", ".json", ".xml", ".yaml", ".yml", ".ini", ".cfg":
 		return theme.FileTextIcon()
