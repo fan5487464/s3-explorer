@@ -24,6 +24,8 @@ import (
 	"s3-explorer/s3client" // 导入 S3 客户端包
 )
 
+// --- Custom Widgets ---
+
 // tappableContainer 是一个可以捕获点击事件的容器
 type tappableContainer struct {
 	widget.BaseWidget
@@ -112,21 +114,18 @@ func (e *listEntry) CreateRenderer() fyne.WidgetRenderer {
 	}
 }
 
-// DoubleTapped 实现了 fyne.DoubleTappable 接口
 func (e *listEntry) DoubleTapped(_ *fyne.PointEvent) {
 	if e.doubleTapped != nil {
 		e.doubleTapped()
 	}
 }
 
-// MouseDown 实现了 desktop.Mouseable 接口，用于捕获带有修饰键的点击
 func (e *listEntry) MouseDown(m *desktop.MouseEvent) {
 	e.ov.handleItemClick(e.id, m)
 }
 
 func (e *listEntry) MouseUp(_ *desktop.MouseEvent) {}
 
-// newListEntry 创建一个新的 listEntry 实例
 func newListEntry(ov *ObjectsView) *listEntry {
 	entry := &listEntry{
 		icon:      widget.NewIcon(theme.FileIcon()),
@@ -138,31 +137,53 @@ func newListEntry(ov *ObjectsView) *listEntry {
 	return entry
 }
 
+// minWidthEntry 是一个具有最小宽度的 Entry
+type minWidthEntry struct {
+	widget.Entry
+	minWidth float32
+}
+
+func newMinWidthEntry(minWidth float32) *minWidthEntry {
+	e := &minWidthEntry{minWidth: minWidth}
+	e.ExtendBaseWidget(e)
+	return e
+}
+
+func (e *minWidthEntry) MinSize() fyne.Size {
+	s := e.Entry.MinSize()
+	if s.Width < e.minWidth {
+		s.Width = e.minWidth
+	}
+	return s
+}
+
+// --- Main View ---
+
 // ObjectsView 结构体用于管理右侧的文件/文件夹列表视图
 type ObjectsView struct {
 	window              fyne.Window
 	s3Client            *s3client.S3Client
 	currentBucket       string
-	currentPrefix       string // 当前路径，例如 "folder1/subfolder/"
+	currentPrefix       string
 	objects             []s3client.S3Object
-	objectList          *widget.List                // 用于显示文件/文件夹列表的 Fyne 列表组件
-	breadcrumbContainer *fyne.Container             // 面包屑容器
-	selectedObjectIDs   map[widget.ListItemID]struct{} // 存储所有选中的对象 ID
-	lastSelectedID      widget.ListItemID           // 存储最后一次单击的对象 ID，用于 shift 多选
-	loadingIndicator    *widget.ProgressBarInfinite // 加载指示器
+	objectList          *widget.List
+	breadcrumbContainer *fyne.Container
+	selectedObjectIDs   map[widget.ListItemID]struct{}
+	lastSelectedID      widget.ListItemID
+	loadingIndicator    *widget.ProgressBarInfinite
 	downloadButton      *widget.Button
 	deleteButton        *widget.Button
-	serviceInfoButton   *widget.Button // 用于显示当前服务信息的按钮（模拟标签）
+	serviceInfoButton   *widget.Button
 
 	// 分页相关状态
 	currentPage    int
 	pageSize       int
-	pageMarkers    []string // 存储每一页的起始 marker
+	pageMarkers    []string
 	nextPageMarker *string
 	prevButton     *widget.Button
 	nextButton     *widget.Button
 	pageInfoLabel  *widget.Label
-	pageSizeEntry  *widget.Entry
+	pageSizeEntry  *minWidthEntry // 使用自定义的 Entry
 }
 
 // NewObjectsView 创建并返回一个新的 ObjectsView 实例
@@ -172,13 +193,13 @@ func NewObjectsView(w fyne.Window) *ObjectsView {
 		selectedObjectIDs: make(map[widget.ListItemID]struct{}),
 		lastSelectedID:    -1,
 		loadingIndicator:  widget.NewProgressBarInfinite(),
-		serviceInfoButton: widget.NewButton("未选择服务", func() {}), // 修复：添加空的回调函数
+		serviceInfoButton: widget.NewButton("未选择服务", func() {}),
 		currentPage:       1,
-		pageSize:          100, // 默认每页 100 条
-		pageMarkers:       []string{""}, // 第1页的 marker 是空字符串
+		pageSize:          1000,
+		pageMarkers:       []string{""},
 	}
-	ov.serviceInfoButton.Importance = widget.LowImportance // 减少按钮样式
-	ov.serviceInfoButton.Disable()                       // 禁用按钮以实现灰色不可点击效果
+	ov.serviceInfoButton.Importance = widget.LowImportance
+	ov.serviceInfoButton.Disable()
 	ov.loadingIndicator.Hide()
 	return ov
 }
@@ -224,7 +245,7 @@ func (ov *ObjectsView) loadObjects() {
 	}
 
 	ov.loadingIndicator.Show()
-	ov.updatePaginationControls() // 禁用按钮
+	ov.updatePaginationControls()
 
 	go func() {
 		marker := ov.pageMarkers[ov.currentPage-1]
@@ -550,7 +571,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 		}
 	})
 	ov.pageInfoLabel = widget.NewLabel("")
-	ov.pageSizeEntry = widget.NewEntry()
+	ov.pageSizeEntry = newMinWidthEntry(80)
 	ov.pageSizeEntry.SetText(strconv.Itoa(ov.pageSize))
 	ov.pageSizeEntry.OnSubmitted = func(s string) {
 		ps, err := strconv.Atoi(s)
