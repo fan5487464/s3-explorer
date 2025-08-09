@@ -6,7 +6,7 @@ import (
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
-	_ "image/png"
+	"image/png"
 
 	"image/color"
 	"io"
@@ -26,9 +26,37 @@ import (
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+	"github.com/nfnt/resize"
 
 	"s3-explorer/s3client"
 )
+
+// --- Global Cache & Custom Types ---
+var (
+	thumbnailCache = make(map[string]fyne.Resource)
+	cacheLock      = sync.RWMutex{}
+)
+
+// thumbnailResource 实现了 fyne.Resource 接口，用于将 image.Image 包装成资源
+type thumbnailResource struct {
+	name string
+	img  image.Image
+}
+
+func (t *thumbnailResource) Name() string {
+	return t.name
+}
+
+func (t *thumbnailResource) Content() []byte {
+	buf := new(bytes.Buffer)
+	// 将 image.Image 编码为 PNG 字节流
+	err := png.Encode(buf, t.img)
+	if err != nil {
+		log.Printf("无法编码缩略图: %v", err)
+		return nil
+	}
+	return buf.Bytes()
+}
 
 // --- Custom Widgets ---
 
@@ -273,8 +301,57 @@ func (ov *ObjectsView) loadObjects() {
 			ov.refreshObjectList()
 			ov.updateButtonsState()
 			ov.updatePaginationControls()
+			go ov.loadThumbnails()
 		})
 	}()
+}
+
+// loadThumbnails 遍历当前对象列表并加载图片缩略图
+func (ov *ObjectsView) loadThumbnails() {
+	for i, obj := range ov.objects {
+		if isPreviewableImage(obj.Name) {
+			cacheLock.RLock()
+			_, exists := thumbnailCache[obj.Key]
+			cacheLock.RUnlock()
+
+			if !exists {
+				go ov.generateThumbnail(i, obj)
+			}
+		}
+	}
+}
+
+// generateThumbnail 为单个图片对象生成缩略图并更新UI
+func (ov *ObjectsView) generateThumbnail(index int, item s3client.S3Object) {
+	body, err := ov.s3Client.DownloadObject(ov.currentBucket, item.Key)
+	if err != nil {
+		log.Printf("生成缩略图失败 (下载 %s): %v", item.Key, err)
+		return
+	}
+	defer body.Close()
+
+	data, err := ioutil.ReadAll(body)
+	if err != nil {
+		log.Printf("生成缩略图失败 (读取 %s): %v", item.Key, err)
+		return
+	}
+
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		log.Printf("生成缩略图失败 (解码 %s): %v", item.Key, err)
+		return
+	}
+
+	thumb := resize.Thumbnail(64, 64, img, resize.Lanczos3)
+	thumbRes := &thumbnailResource{name: item.Key, img: thumb}
+
+	cacheLock.Lock()
+	thumbnailCache[item.Key] = thumbRes
+	cacheLock.Unlock()
+
+	fyne.Do(func() {
+		ov.objectList.RefreshItem(index)
+	})
 }
 
 // refreshObjectList 刷新文件/文件夹列表显示
@@ -487,7 +564,19 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 					ov.SetBucketAndPrefix(ov.s3Client, ov.currentBucket, item.Key)
 				}
 			} else {
-				entry.icon.SetResource(getIconForFile(item.Name))
+				if isPreviewableImage(item.Name) {
+					cacheLock.RLock()
+					thumb, exists := thumbnailCache[item.Key]
+					cacheLock.RUnlock()
+					if exists {
+						entry.icon.SetResource(thumb)
+					} else {
+						entry.icon.SetResource(theme.FileImageIcon()) // 默认图片图标
+					}
+				} else {
+					entry.icon.SetResource(getIconForFile(item.Name))
+				}
+
 				entry.infoLabel.SetText(fmt.Sprintf("%s | %s", formatBytes(item.Size), item.LastModified))
 				entry.doubleTapped = func() {
 					ov.showPreviewWindow(item)
@@ -814,17 +903,27 @@ func getIconForFile(name string) fyne.Resource {
 	ext := strings.ToLower(filepath.Ext(name))
 	switch ext {
 	case ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg", ".webp":
-		return theme.FileIcon()
+		return theme.FileImageIcon()
 	case ".mp3", ".wav", ".ogg", ".flac":
-		return theme.FileIcon()
+		return theme.FileAudioIcon()
 	case ".mp4", ".avi", ".mov", ".mkv", ".webm":
-		return theme.FileIcon()
+		return theme.FileVideoIcon()
 	case ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2":
 		return theme.FileIcon()
 	case ".txt", ".md", ".log", ".json", ".xml", ".yaml", ".yml", ".ini", ".cfg":
 		return theme.FileTextIcon()
 	default:
 		return theme.FileIcon()
+	}
+}
+
+func isPreviewableImage(name string) bool {
+	ext := strings.ToLower(filepath.Ext(name))
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".gif":
+		return true
+	default:
+		return false
 	}
 }
 
