@@ -258,6 +258,7 @@ func (bv *BucketsView) GetContent() fyne.CanvasObject {
 	bv.deleteButton.Disable()
 
 	buttonBox := container.NewHBox(
+		layout.NewSpacer(),
 		createBucketButton,
 		bv.deleteButton,
 		layout.NewSpacer(),

@@ -269,7 +269,9 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 
 	buttonBox := container.NewHBox(
 		addButton,
+		layout.NewSpacer(),
 		editButton,
+		layout.NewSpacer(),
 		deleteButton,
 		layout.NewSpacer(),
 		sv.loadingIndicator,
