@@ -651,12 +651,13 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 		},
 	)
 
+	//listContainer := newTappableContainer(ov.objectList, ov.unselectAllObjects)
 	listContainer := newTappableContainer(ov.objectList, ov.unselectAllObjects)
 
 	ov.breadcrumbContainer = container.NewHBox()
 	ov.updateBreadcrumbs()
 
-	createFolderButton := widget.NewButtonWithIcon("创建文件夹", theme.FolderNewIcon(), func() {
+	createFolderButton := widget.NewButtonWithIcon("", theme.FolderNewIcon(), func() {
 		if ov.s3Client == nil || ov.currentBucket == "" {
 			dialog.ShowInformation("提示", "请先选择一个 S3 服务和存储桶。", ov.window)
 			return
@@ -689,7 +690,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 		}, ov.window)
 	})
 
-	uploadButton := widget.NewButtonWithIcon("上传", theme.UploadIcon(), func() {
+	uploadButton := widget.NewButtonWithIcon("", theme.UploadIcon(), func() {
 		if ov.s3Client == nil || ov.currentBucket == "" {
 			dialog.ShowInformation("提示", "请先选择一个 S3 服务和存储桶。", ov.window)
 			return
@@ -761,7 +762,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 		d.Show()
 	})
 
-	ov.downloadButton = widget.NewButtonWithIcon("下载", theme.DownloadIcon(), func() {
+	ov.downloadButton = widget.NewButtonWithIcon("", theme.DownloadIcon(), func() {
 		if len(ov.selectedObjectIDs) == 0 {
 			dialog.ShowInformation("提示", "请至少选择一个要下载的项目。", ov.window)
 			return
@@ -778,7 +779,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 			go ov.startDownloadProcess(uri.Path())
 		}, ov.window)
 	})
-	ov.deleteButton = widget.NewButtonWithIcon("删除", theme.DeleteIcon(), func() {
+	ov.deleteButton = widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {
 		selectedCount := len(ov.selectedObjectIDs)
 		if selectedCount == 0 {
 			dialog.ShowInformation("提示", "请先选择要删除的文件或文件夹。", ov.window)
@@ -883,7 +884,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 	statusBar := container.NewBorder(nil, nil, ov.serviceInfoButton, pagingControls, nil)
 
 	// --- 主内容区 ---
-	return container.NewBorder(topBar, statusBar, nil, nil, listContainer)
+	return container.NewBorder(topBar, statusBar, nil, nil, container.NewVBox(widget.NewSeparator()), listContainer)
 }
 
 // startUploadFolderProcess 启动文件夹上传流程
