@@ -14,7 +14,9 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -492,8 +494,24 @@ func (ov *ObjectsView) updatePaginationControls() {
 	}
 }
 
-// showPreviewWindow 弹出一个新窗口来预览文件
+// showPreviewWindow 弹出一个新窗口来预览文件，或使用系统默认应用打开
 func (ov *ObjectsView) showPreviewWindow(item s3client.S3Object) {
+	ext := strings.ToLower(filepath.Ext(item.Name))
+
+	// 定义可直接在 Fyne 中预览的类型
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".gif":
+		ov.showInAppPreview(item, "image")
+	case ".txt", ".md", ".log", ".json", ".xml", ".yaml", ".yml", ".ini", ".cfg", ".go", ".py", ".js", ".html", ".css":
+		ov.showInAppPreview(item, "text")
+	default:
+		// 对于其他类型，下载到临时文件并用系统默认应用打开
+		ov.openWithDefaultApp(item)
+	}
+}
+
+// showInAppPreview 在应用内的新窗口中显示预览
+func (ov *ObjectsView) showInAppPreview(item s3client.S3Object, previewType string) {
 	previewWindow := fyne.CurrentApp().NewWindow(fmt.Sprintf("预览 - %s", item.Name))
 	previewWindow.SetContent(container.NewCenter(widget.NewProgressBarInfinite()))
 	previewWindow.Resize(fyne.NewSize(800, 600))
@@ -515,11 +533,8 @@ func (ov *ObjectsView) showPreviewWindow(item s3client.S3Object) {
 			return
 		}
 
-		ext := strings.ToLower(filepath.Ext(item.Name))
 		var previewContent fyne.CanvasObject
-
-		switch ext {
-		case ".png", ".jpg", ".jpeg", ".gif":
+		if previewType == "image" {
 			img, _, err := image.Decode(bytes.NewReader(data))
 			if err != nil {
 				log.Printf("预览图片失败 (解码): %v", err)
@@ -529,16 +544,65 @@ func (ov *ObjectsView) showPreviewWindow(item s3client.S3Object) {
 				canvasImg.FillMode = canvas.ImageFillContain
 				previewContent = container.NewScroll(canvasImg)
 			}
-		case ".txt", ".md", ".log", ".json", ".xml", ".yaml", ".yml", ".ini", ".cfg", ".go", ".py", ".js", ".html", ".css":
+		} else {
 			textEntry := widget.NewMultiLineEntry()
 			textEntry.SetText(string(data))
 			textEntry.Disable()
 			textEntry.Wrapping = fyne.TextWrapBreak
 			previewContent = container.NewScroll(textEntry)
-		default:
-			previewContent = container.NewCenter(widget.NewLabel(fmt.Sprintf("不支持预览 %s 类型的文件", ext)))
 		}
 		fyne.Do(func() { previewWindow.SetContent(previewContent) })
+	}()
+}
+
+// openWithDefaultApp 下载文件到临时目录并用系统默认应用打开
+func (ov *ObjectsView) openWithDefaultApp(item s3client.S3Object) {
+	loadingDialog := dialog.NewProgressInfinite("正在准备预览", "正在下载文件...", ov.window)
+	loadingDialog.Show()
+
+	go func() {
+		defer loadingDialog.Hide()
+
+		body, err := ov.s3Client.DownloadObject(ov.currentBucket, item.Key)
+		if err != nil {
+			log.Printf("打开文件失败 (下载): %v", err)
+			fyne.Do(func() { dialog.ShowError(fmt.Errorf("下载文件失败: %v", err), ov.window) })
+			return
+		}
+		defer body.Close()
+
+		// 修正：创建带正确扩展名的临时文件
+		tempFile, err := ioutil.TempFile("", fmt.Sprintf("s3-explorer-*%s", filepath.Ext(item.Name)))
+		if err != nil {
+			log.Printf("创建临时文件失败: %v", err)
+			fyne.Do(func() { dialog.ShowError(fmt.Errorf("创建临时文件失败: %v", err), ov.window) })
+			return
+		}
+		defer tempFile.Close()
+
+		_, err = io.Copy(tempFile, body)
+		if err != nil {
+			log.Printf("写入临时文件失败: %v", err)
+			fyne.Do(func() { dialog.ShowError(fmt.Errorf("写入临时文件失败: %v", err), ov.window) })
+			return
+		}
+
+		// 获取临时文件路径并用系统命令打开
+		tempFilePath := tempFile.Name()
+		var cmd *exec.Cmd
+		switch runtime.GOOS {
+		case "windows":
+			cmd = exec.Command("cmd", "/C", "start", tempFilePath)
+		case "darwin":
+			cmd = exec.Command("open", tempFilePath)
+		default: // linux, freebsd, openbsd, netbsd
+			cmd = exec.Command("xdg-open", tempFilePath)
+		}
+
+		if err := cmd.Start(); err != nil {
+			log.Printf("打开外部应用失败: %v", err)
+			fyne.Do(func() { dialog.ShowError(fmt.Errorf("无法使用默认应用打开文件: %v", err), ov.window) })
+		}
 	}()
 }
 
