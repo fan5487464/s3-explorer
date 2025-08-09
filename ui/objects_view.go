@@ -7,6 +7,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	"image/png"
+	_ "image/png"
 
 	"image/color"
 	"io"
@@ -528,7 +529,7 @@ func (ov *ObjectsView) showPreviewWindow(item s3client.S3Object) {
 				canvasImg.FillMode = canvas.ImageFillContain
 				previewContent = container.NewScroll(canvasImg)
 			}
-		case ".txt", ".md", ".log", ".json", ".xml", ".yaml", ".yml", ".ini", ".cfg":
+		case ".txt", ".md", ".log", ".json", ".xml", ".yaml", ".yml", ".ini", ".cfg", ".go", ".py", ".js", ".html", ".css":
 			textEntry := widget.NewMultiLineEntry()
 			textEntry.SetText(string(data))
 			textEntry.Disable()
