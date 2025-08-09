@@ -1,7 +1,13 @@
 package ui
 
 import (
+	"bytes"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
+
 	"image/color"
 	"io"
 	"io/ioutil"
@@ -21,7 +27,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"s3-explorer/s3client" // 导入 S3 客户端包
+	"s3-explorer/s3client"
 )
 
 // --- Custom Widgets ---
@@ -183,7 +189,7 @@ type ObjectsView struct {
 	prevButton     *widget.Button
 	nextButton     *widget.Button
 	pageInfoLabel  *widget.Label
-	pageSizeEntry  *minWidthEntry // 使用自定义的 Entry
+	pageSizeEntry  *minWidthEntry
 }
 
 // NewObjectsView 创建并返回一个新的 ObjectsView 实例
@@ -408,6 +414,56 @@ func (ov *ObjectsView) updatePaginationControls() {
 	}
 }
 
+// showPreviewWindow 弹出一个新窗口来预览文件
+func (ov *ObjectsView) showPreviewWindow(item s3client.S3Object) {
+	previewWindow := fyne.CurrentApp().NewWindow(fmt.Sprintf("预览 - %s", item.Name))
+	previewWindow.SetContent(container.NewCenter(widget.NewProgressBarInfinite()))
+	previewWindow.Resize(fyne.NewSize(800, 600))
+	previewWindow.Show()
+
+	go func() {
+		body, err := ov.s3Client.DownloadObject(ov.currentBucket, item.Key)
+		if err != nil {
+			log.Printf("预览失败 (下载): %v", err)
+			fyne.Do(func() { previewWindow.SetContent(container.NewCenter(widget.NewLabel("加载预览失败"))) })
+			return
+		}
+		defer body.Close()
+
+		data, err := ioutil.ReadAll(body)
+		if err != nil {
+			log.Printf("预览失败 (读取): %v", err)
+			fyne.Do(func() { previewWindow.SetContent(container.NewCenter(widget.NewLabel("加载预览失败"))) })
+			return
+		}
+
+		ext := strings.ToLower(filepath.Ext(item.Name))
+		var previewContent fyne.CanvasObject
+
+		switch ext {
+		case ".png", ".jpg", ".jpeg", ".gif":
+			img, _, err := image.Decode(bytes.NewReader(data))
+			if err != nil {
+				log.Printf("预览图片失败 (解码): %v", err)
+				previewContent = container.NewCenter(widget.NewLabel("无法解码图片"))
+			} else {
+				canvasImg := canvas.NewImageFromImage(img)
+				canvasImg.FillMode = canvas.ImageFillContain
+				previewContent = container.NewScroll(canvasImg)
+			}
+		case ".txt", ".md", ".log", ".json", ".xml", ".yaml", ".yml", ".ini", ".cfg":
+			textEntry := widget.NewMultiLineEntry()
+			textEntry.SetText(string(data))
+			textEntry.Disable()
+			textEntry.Wrapping = fyne.TextWrapBreak
+			previewContent = container.NewScroll(textEntry)
+		default:
+			previewContent = container.NewCenter(widget.NewLabel(fmt.Sprintf("不支持预览 %s 类型的文件", ext)))
+		}
+		fyne.Do(func() { previewWindow.SetContent(previewContent) })
+	}()
+}
+
 // GetContent 返回 ObjectsView 的 Fyne UI 内容
 func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 	ov.objectList = widget.NewList(
@@ -433,7 +489,9 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 			} else {
 				entry.icon.SetResource(getIconForFile(item.Name))
 				entry.infoLabel.SetText(fmt.Sprintf("%s | %s", formatBytes(item.Size), item.LastModified))
-				entry.doubleTapped = nil
+				entry.doubleTapped = func() {
+					ov.showPreviewWindow(item)
+				}
 			}
 			entry.Refresh()
 		},
@@ -460,7 +518,6 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 					dialog.ShowInformation("提示", "文件夹名称不能为空。", ov.window)
 					return
 				}
-				// S3 中的文件夹 key 是当前前缀 + 文件夹名 + /
 				s3Key := ov.currentPrefix + folderName + "/"
 
 				go func() {
@@ -470,7 +527,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 							dialog.ShowError(fmt.Errorf("创建文件夹失败: %v", err), ov.window)
 						} else {
 							dialog.ShowInformation("成功", fmt.Sprintf("文件夹 '%s' 创建成功！", folderName), ov.window)
-							ov.loadObjects() // 刷新列表
+							ov.loadObjects()
 						}
 					})
 				}()
@@ -579,7 +636,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 						} else {
 							dialog.ShowInformation("成功", fmt.Sprintf("%d 个项目已删除。", selectedCount), ov.window)
 						}
-						ov.loadObjects() // 刷新列表
+						ov.loadObjects()
 					})
 				}()
 			}
@@ -611,7 +668,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 		ps, err := strconv.Atoi(s)
 		if err != nil || ps <= 0 {
 			dialog.ShowError(fmt.Errorf("无效的页面大小"), ov.window)
-			ov.pageSizeEntry.SetText(strconv.Itoa(ov.pageSize)) // 恢复原值
+			ov.pageSizeEntry.SetText(strconv.Itoa(ov.pageSize))
 			return
 		}
 		ov.pageSize = ps
@@ -633,6 +690,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 	// --- 底部状态栏 ---
 	statusBar := container.NewBorder(nil, nil, ov.serviceInfoButton, pagingControls, nil)
 
+	// --- 主内容区 ---
 	return container.NewBorder(topBar, statusBar, nil, nil, listContainer)
 }
 
