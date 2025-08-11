@@ -671,11 +671,33 @@ func (ov *ObjectsView) showInAppPreview(item s3client.S3Object, previewType stri
 				previewContent = container.NewScroll(canvasImg)
 			}
 		} else {
-			textEntry := widget.NewMultiLineEntry()
-			textEntry.SetText(string(data))
-			textEntry.Wrapping = fyne.TextWrapBreak
-			textEntry.Disable()
-			previewContent = container.NewScroll(textEntry)
+			ext := strings.ToLower(filepath.Ext(item.Name))
+
+			if ext == ".md" {
+				// Left side: Raw text
+				rawText := widget.NewMultiLineEntry()
+				rawText.SetText(string(data))
+				rawText.Wrapping = fyne.TextWrapBreak
+				rawText.Disable()
+
+				// Right side: Rendered Markdown
+				renderedText := widget.NewRichTextFromMarkdown(string(data))
+				renderedText.Wrapping = fyne.TextWrapBreak
+
+				// Create a split view
+				split := container.NewHSplit(
+					container.NewScroll(rawText),
+					container.NewScroll(renderedText),
+				)
+				split.Offset = 0.5 // Start with a 50/50 split
+				previewContent = split
+			} else {
+				textEntry := widget.NewMultiLineEntry()
+				textEntry.SetText(string(data))
+				textEntry.Wrapping = fyne.TextWrapBreak
+				textEntry.Disable()
+				previewContent = container.NewScroll(textEntry)
+			}
 		}
 		fyne.Do(func() { previewWindow.SetContent(previewContent) })
 	}()
