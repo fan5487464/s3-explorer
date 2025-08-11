@@ -1135,18 +1135,31 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 
 // startUploadFolderProcess 启动文件夹上传流程
 func (ov *ObjectsView) startUploadFolderProcess(localPath string) {
-	progressDialog := dialog.NewProgressInfinite("正在上传文件夹", "正在扫描文件...", ov.window)
+	progressDialog := dialog.NewProgressInfinite("正在上传文件夹", "正在扫描...", ov.window)
 	progressDialog.Show()
 	defer progressDialog.Hide()
 
 	baseFolderName := filepath.Base(localPath)
 
 	var filesToUpload []string
+	var foldersToCreate []string // S3 keys for folders
+
 	err := filepath.Walk(localPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		if !info.IsDir() {
+		relPath, err := filepath.Rel(localPath, path)
+		if err != nil {
+			return err
+		}
+
+		// 构造 S3 key，并确保总是使用 '/' 作为路径分隔符
+		s3Key := filepath.Join(ov.currentPrefix, baseFolderName, relPath)
+		s3Key = strings.ReplaceAll(s3Key, string(os.PathSeparator), "/")
+
+		if info.IsDir() {
+			foldersToCreate = append(foldersToCreate, s3Key+"/")
+		} else {
 			filesToUpload = append(filesToUpload, path)
 		}
 		return nil
@@ -1159,75 +1172,103 @@ func (ov *ObjectsView) startUploadFolderProcess(localPath string) {
 		return
 	}
 
+	if len(filesToUpload) == 0 && len(foldersToCreate) == 0 {
+		return // 路径无效或不可读
+	}
+
 	fyne.Do(func() {
-		progressDialog.SetDismissText("正在上传文件...")
+		progressDialog.SetDismissText(fmt.Sprintf("准备上传 %d 个文件夹和 %d 个文件...", len(foldersToCreate), len(filesToUpload)))
 	})
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	var failedUploads []string
-
+	var failedItems []string
 	numWorkers := 10
-	uploadChannel := make(chan string, len(filesToUpload))
 
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for filePath := range uploadChannel {
-				fileInfo, err := os.Stat(filePath)
-				if err != nil {
-					log.Printf("无法获取文件信息 %s: %v", filePath, err)
-					mu.Lock()
-					failedUploads = append(failedUploads, filepath.Base(filePath))
-					mu.Unlock()
-					continue
+	// --- 1. 并行创建所有文件夹 ---
+	if len(foldersToCreate) > 0 {
+		folderChannel := make(chan string, len(foldersToCreate))
+		for i := 0; i < numWorkers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for s3Key := range folderChannel {
+					err := ov.s3Client.CreateFolder(ov.currentBucket, s3Key)
+					if err != nil {
+						log.Printf("创建文件夹 %s 失败: %v", s3Key, err)
+						mu.Lock()
+						failedItems = append(failedItems, s3Key)
+						mu.Unlock()
+					}
 				}
-
-				relPath, err := filepath.Rel(localPath, filePath)
-				if err != nil {
-					log.Printf("无法获取相对路径: %v", err)
-					mu.Lock()
-					failedUploads = append(failedUploads, filepath.Base(filePath))
-					mu.Unlock()
-					continue
-				}
-
-				// S3 key 必须使用正斜杠
-				s3Key := filepath.Join(ov.currentPrefix, baseFolderName, relPath)
-				s3Key = strings.ReplaceAll(s3Key, string(os.PathSeparator), "/")
-
-				file, err := os.Open(filePath)
-				if err != nil {
-					log.Printf("无法打开文件 %s: %v", filePath, err)
-					mu.Lock()
-					failedUploads = append(failedUploads, filepath.Base(filePath))
-					mu.Unlock()
-					continue
-				}
-
-				err = ov.s3Client.UploadObject(ov.currentBucket, s3Key, file, fileInfo.Size())
-				file.Close() // 必须关闭文件
-				if err != nil {
-					log.Printf("上传文件 %s 失败: %v", filePath, err)
-					mu.Lock()
-					failedUploads = append(failedUploads, filepath.Base(filePath))
-					mu.Unlock()
-				}
-			}
-		}()
+			}()
+		}
+		for _, key := range foldersToCreate {
+			folderChannel <- key
+		}
+		close(folderChannel)
+		wg.Wait()
 	}
 
-	for _, f := range filesToUpload {
-		uploadChannel <- f
-	}
-	close(uploadChannel)
+	// --- 2. 并行上传所有文件 ---
+	if len(filesToUpload) > 0 {
+		uploadChannel := make(chan string, len(filesToUpload))
+		for i := 0; i < numWorkers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for filePath := range uploadChannel {
+					relPath, err := filepath.Rel(localPath, filePath)
+					if err != nil {
+						log.Printf("无法获取相对路径: %v", err)
+						mu.Lock()
+						failedItems = append(failedItems, filepath.Base(filePath))
+						mu.Unlock()
+						continue
+					}
+					s3Key := filepath.Join(ov.currentPrefix, baseFolderName, relPath)
+					s3Key = strings.ReplaceAll(s3Key, string(os.PathSeparator), "/")
 
-	wg.Wait()
+					file, err := os.Open(filePath)
+					if err != nil {
+						log.Printf("无法打开文件 %s: %v", filePath, err)
+						mu.Lock()
+						failedItems = append(failedItems, filepath.Base(filePath))
+						mu.Unlock()
+						continue
+					}
+
+					fileInfo, err := file.Stat()
+					if err != nil {
+						log.Printf("无法获取文件信息 %s: %v", filePath, err)
+						mu.Lock()
+						failedItems = append(failedItems, filepath.Base(filePath))
+						mu.Unlock()
+						file.Close()
+						continue
+					}
+
+					err = ov.s3Client.UploadObject(ov.currentBucket, s3Key, file, fileInfo.Size())
+					file.Close()
+					if err != nil {
+						log.Printf("上传文件 %s 失败: %v", filePath, err)
+						mu.Lock()
+						failedItems = append(failedItems, filepath.Base(filePath))
+						mu.Unlock()
+					}
+				}
+			}()
+		}
+		for _, f := range filesToUpload {
+			uploadChannel <- f
+		}
+		close(uploadChannel)
+		wg.Wait()
+	}
 
 	fyne.Do(func() {
-		if len(failedUploads) > 0 {
-			dialog.ShowError(fmt.Errorf("部分文件上传失败: %s", strings.Join(failedUploads, ", ")), ov.window)
+		if len(failedItems) > 0 {
+			dialog.ShowError(fmt.Errorf("部分项目上传失败: %s", strings.Join(failedItems, ", ")), ov.window)
 		} else {
 			dialog.ShowInformation("成功", fmt.Sprintf("文件夹 '%s' 上传完成。", baseFolderName), ov.window)
 		}

@@ -28,24 +28,50 @@ S3 Explorer 是一个基于 Go 语言和 Fyne UI 框架开发的桌面应用程�
 
 ### 构建与运行
 
-1.  **克隆仓库**:
-    ```bash
-    git clone https://github.com/fan5487464/s3-explorer.git
-    cd s3-explorer
-    ```
-2.  **下载依赖**:
-    ```bash
-    go mod tidy
-    ```
-3.  **运行应用**:
-    ```bash
+本项目提供了一个 `Makefile` 来简化多平台应用的构建过程。
+
+#### 环境要求
+
+*   **Go**: 版本 1.20 或更高。
+*   **Make**: 在 macOS 和 Linux 上通常已预装。Windows 用户需要自行安装 (例如通过 [Chocolatey](https://chocolatey.org/install) 执行 `choco install make`) 或使用一个类 Unix 环境 (如 Git Bash 或 WSL)。
+
+#### 编译
+
+在项目根目录下，您可以运行以下命令：
+
+- **为当前系统构建**:
+  ```shell
+  make build
+  ```
+
+- **为指定平台交叉编译**:
+  ```shell
+  make build-windows  # 构建 Windows 版本
+  make build-linux    # 构建 Linux 版本
+  make build-macos    # 构建 macOS 版本
+  ```
+  *注意：在 Windows 上构建时，`Makefile` 会自动添加 `-ldflags="-H windowsgui"` 标志，以确保生成的是一个没有控制台后端的 GUI 应用。*
+
+- **一键构建所有平台**:
+  ```shell
+  make all
+  ```
+
+- **清理构建产物**:
+  ```shell
+  make clean
+  ```
+
+所有生成的可执行文件都会被存放在项目根目录下的 `build` 文件夹中。
+
+#### 运行
+
+1.  **开发时运行**:
+    ```shell
     go run .
     ```
-    或者，您可以构建可执行文件：
-    ```bash
-    go build -o s3-explorer
-    ./s3-explorer
-    ```
+2.  **运行构建好的程序**:
+    直接在 `build` 文件夹中找到对应您系统的可执行文件并运行。
 
 ## 使用方法
 
