@@ -9,7 +9,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// ThinProgressBar is a simple, thin, indeterminate progress bar widget.
+// ThinProgressBar 是一个简单的、细长的、不确定的进度条小部件。
 type ThinProgressBar struct {
 	widget.BaseWidget
 
@@ -17,7 +17,7 @@ type ThinProgressBar struct {
 	anim *fyne.Animation
 }
 
-// NewThinProgressBar creates a new thin progress bar.
+// NewThinProgressBar 创建一个新的细长进度条。
 func NewThinProgressBar() *ThinProgressBar {
 	p := &ThinProgressBar{}
 	p.ExtendBaseWidget(p)
@@ -26,7 +26,7 @@ func NewThinProgressBar() *ThinProgressBar {
 	return p
 }
 
-// CreateRenderer is a private method to Fyne which links this widget to its renderer.
+// CreateRenderer 是 Fyne 的一个私有方法，用于将此小部件链接到其渲染器。
 func (p *ThinProgressBar) CreateRenderer() fyne.WidgetRenderer {
 	return &thinProgressBarRenderer{
 		progress: p,
@@ -34,12 +34,12 @@ func (p *ThinProgressBar) CreateRenderer() fyne.WidgetRenderer {
 	}
 }
 
-// MinSize returns the smallest size this widget can take.
+// MinSize 返回此小部件可以占用的最小尺寸。
 func (p *ThinProgressBar) MinSize() fyne.Size {
-	return fyne.NewSize(20, 2) // 2 pixels high
+	return fyne.NewSize(20, 2) // 2像素高
 }
 
-// Show this widget and start the animation.
+// Show 显示此小部件并启动动画。
 func (p *ThinProgressBar) Show() {
 	p.BaseWidget.Show()
 
@@ -48,7 +48,7 @@ func (p *ThinProgressBar) Show() {
 			if p.Size().Width == 0 {
 				return
 			}
-			barWidth := p.Size().Width / 4 // The moving bar is 1/4 of the total width
+			barWidth := p.Size().Width / 4 // 移动条是总宽度的 1/4
 			offset := val*(p.Size().Width+barWidth) - barWidth
 
 			p.line.Move(fyne.NewPos(offset, 0))
@@ -59,7 +59,7 @@ func (p *ThinProgressBar) Show() {
 	p.anim.Start()
 }
 
-// Hide this widget and stop the animation.
+// Hide 隐藏此小部件并停止动画。
 func (p *ThinProgressBar) Hide() {
 	if p.anim != nil {
 		p.anim.Stop()
@@ -75,7 +75,7 @@ type thinProgressBarRenderer struct {
 func (r *thinProgressBarRenderer) Destroy() {}
 
 func (r *thinProgressBarRenderer) Layout(size fyne.Size) {
-	// The animation will handle the layout of the line.
+	// 动画将处理线条的布局。
 }
 
 func (r *thinProgressBarRenderer) MinSize() fyne.Size {

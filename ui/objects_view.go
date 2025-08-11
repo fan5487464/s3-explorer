@@ -170,8 +170,8 @@ func (e *listEntry) MouseUp(_ *desktop.MouseEvent) {}
 func newListEntry(ov *ObjectsView) *listEntry {
 	entry := &listEntry{
 		icon:      widget.NewIcon(theme.FileIcon()),
-		nameLabel: widget.NewLabel("Name"),
-		infoLabel: widget.NewLabel("Size/Time"),
+		nameLabel: widget.NewLabel("名称"),
+		infoLabel: widget.NewLabel("大小/时间"),
 		ov:        ov,
 	}
 	entry.ExtendBaseWidget(entry)
@@ -268,8 +268,8 @@ func (e *gridEntry) MouseUp(_ *desktop.MouseEvent) {}
 
 func newGridEntry(ov *ObjectsView) *gridEntry {
 	icon := widget.NewIcon(theme.FileIcon())
-	nameLabel := widget.NewLabel("Filename")
-	nameLabel.Wrapping = fyne.TextTruncate // Change to truncate
+	nameLabel := widget.NewLabel("文件名")
+	nameLabel.Wrapping = fyne.TextTruncate // 修改为截断
 	nameLabel.Alignment = fyne.TextAlignCenter
 
 	entry := &gridEntry{
@@ -770,7 +770,7 @@ func (ov *ObjectsView) openWithDefaultApp(item s3client.S3Object) {
 			cmd = exec.Command("cmd", "/C", "start", tempFilePath)
 		case "darwin":
 			cmd = exec.Command("open", tempFilePath)
-		default: // linux, freebsd, openbsd, netbsd
+		default: // linux, freebsd, openbsd, netbsd 等
 			cmd = exec.Command("xdg-open", tempFilePath)
 		}
 
@@ -937,7 +937,7 @@ func (ov *ObjectsView) createGridView() fyne.CanvasObject {
 		item := ov.objects[i]
 		entry := newGridEntry(ov)
 		entry.id = i
-		entry.nameLabel.SetText(formatFileNameForDisplay(item.Name, 20)) // Format filename for single line display with truncation and extension
+		entry.nameLabel.SetText(formatFileNameForDisplay(item.Name, 20)) // 设置单行显示的文件名格式，包括截断和扩展名
 		_, entry.selected = ov.selectedObjectIDs[i]
 
 		if item.IsFolder {
@@ -1198,7 +1198,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 
 	// --- 主内容区 ---
 	ov.mainContent = container.NewMax()
-	ov.refreshObjectView() // Initial view
+	ov.refreshObjectView() // 初始视图
 
 	// 创建一个用于裁剪进度条的滚动容器
 	clippedProgressBar := container.NewScroll(ov.loadingIndicator)
@@ -1224,7 +1224,7 @@ func (ov *ObjectsView) startUploadFolderProcess(localPath string) {
 	baseFolderName := filepath.Base(localPath)
 
 	var filesToUpload []string
-	var foldersToCreate []string // S3 keys for folders
+	var foldersToCreate []string // 用于创建文件夹的 S3 key
 
 	err := filepath.Walk(localPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -1566,9 +1566,9 @@ func formatFileNameForDisplay(fileName string, maxDisplayLength int) string {
 
 	// 计算去除“...”和扩展名后，基本名称的可用长度
 	// maxDisplayLength - len("...") - len(ext)
-	availableBaseLen := maxDisplayLength - 3 - len(ext) // 3 for "..."
+	availableBaseLen := maxDisplayLength - 3 - len(ext) // 3 个字符是 "..."
 
-	if availableBaseLen < 0 { // If extension + "..." is already too long
+	if availableBaseLen < 0 { // 如果扩展名 + "..." 已经太长
 		// 这种情况意味着扩展名本身太长，无法适应maxDisplayLength
 		// 或者maxDisplayLength太小。
 		// 为简单起见，如果扩展名 + "..." 太长，则直接截断整个文件名。

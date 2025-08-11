@@ -316,7 +316,7 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 					if newlySelectedID != -1 {
 						sv.handleServiceTapped(newlySelectedID)
 					} else {
-						sv.handleServiceTapped(-1) // Clear selection if not found
+						sv.handleServiceTapped(-1) // 如果未找到，则清除选择
 					}
 				})
 			}
