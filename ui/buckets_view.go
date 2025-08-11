@@ -120,7 +120,11 @@ func (bv *BucketsView) loadBuckets() {
 		return
 	}
 
+	// 开始加载前，清空现有列表并显示加载指示器
+	bv.buckets = []string{}
+	bv.refreshBucketList()
 	bv.loadingIndicator.Show()
+
 	go func() {
 		buckets, err := bv.S3Client.ListBuckets()
 		fyne.Do(func() {
@@ -263,9 +267,15 @@ func (bv *BucketsView) GetContent() fyne.CanvasObject {
 		layout.NewSpacer(),
 		bv.deleteButton,
 		layout.NewSpacer(),
-		bv.loadingIndicator,
-		layout.NewSpacer(),
 	)
 
-	return container.NewBorder(buttonBox, nil, nil, nil, container.NewVBox(widget.NewSeparator()), bv.bucketList)
+	// 将列表和加载指示器放入一个堆栈容器中，使加载指示器可以覆盖在列表之上
+	listContainer := container.NewStack(
+		bv.bucketList,
+		bv.loadingIndicator,
+	)
+
+	return container.NewBorder(buttonBox, nil, nil, nil, container.NewVBox(widget.NewSeparator()), listContainer)
+
+	return container.NewBorder(buttonBox, nil, nil, nil, container.NewVBox(widget.NewSeparator()), listContainer)
 }

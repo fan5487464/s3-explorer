@@ -20,6 +20,7 @@ type S3ServiceConfig struct {
 	AccessKey string `json:"accessKey"`           // 访问密钥 ID
 	SecretKey string `json:"secretKey"`           // 秘密访问密钥
 	ViewMode  string `json:"view_mode,omitempty"` // 视图模式 ("list" or "grid")
+	Proxy     string `json:"proxy,omitempty"`     // 代理地址
 }
 
 // ConfigStore 存储所有 S3 服务的配置列表
@@ -53,11 +54,45 @@ func InitDB() error {
 		endpoint TEXT NOT NULL,
 		accessKey TEXT NOT NULL,
 		secretKey TEXT NOT NULL,
-		viewMode TEXT
+		viewMode TEXT,
+		proxy TEXT
 	);`
 	_, err = db.Exec(createTableSQL)
 	if err != nil {
 		return fmt.Errorf("创建 services 表失败: %w", err)
+	}
+
+	// 检查并添加 proxy 列（用于旧版本升级）
+	rows, err := db.Query("PRAGMA table_info(services)")
+	if err != nil {
+		return fmt.Errorf("查询表结构失败: %w", err)
+	}
+	defer rows.Close()
+
+	var proxyColumnExists bool
+	for rows.Next() {
+		var cid int
+		var name string
+		var typeName string
+		var notnull bool
+		var dfltValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typeName, &notnull, &dfltValue, &pk); err != nil {
+			return fmt.Errorf("扫描表结构行失败: %w", err)
+		}
+		if name == "proxy" {
+			proxyColumnExists = true
+			break
+		}
+	}
+
+	if !proxyColumnExists {
+		log.Println("数据库中缺少 proxy 列，正在添加...")
+		alterTableSQL := `ALTER TABLE services ADD COLUMN proxy TEXT;`
+		_, err := db.Exec(alterTableSQL)
+		if err != nil {
+			return fmt.Errorf("向 services 表添加 proxy 列失败: %w", err)
+		}
 	}
 
 	// 检查是否需要从旧的 JSON 文件迁移数据
@@ -131,7 +166,7 @@ func migrateFromJSON(filePath string) error {
 
 // LoadConfig 从数据库加载 S3 服务配置
 func LoadConfig() (*ConfigStore, error) {
-	rows, err := db.Query("SELECT alias, endpoint, accessKey, secretKey, viewMode FROM services")
+	rows, err := db.Query("SELECT alias, endpoint, accessKey, secretKey, viewMode, proxy FROM services")
 	if err != nil {
 		return nil, fmt.Errorf("查询服务失败: %w", err)
 	}
@@ -140,8 +175,12 @@ func LoadConfig() (*ConfigStore, error) {
 	var services []S3ServiceConfig
 	for rows.Next() {
 		var svc S3ServiceConfig
-		if err := rows.Scan(&svc.Alias, &svc.Endpoint, &svc.AccessKey, &svc.SecretKey, &svc.ViewMode); err != nil {
+		var proxy sql.NullString // 使用 sql.NullString 来处理可能为 NULL 的 proxy 列
+		if err := rows.Scan(&svc.Alias, &svc.Endpoint, &svc.AccessKey, &svc.SecretKey, &svc.ViewMode, &proxy); err != nil {
 			return nil, fmt.Errorf("扫描服务数据失败: %w", err)
+		}
+		if proxy.Valid {
+			svc.Proxy = proxy.String
 		}
 		services = append(services, svc)
 	}
@@ -155,8 +194,8 @@ func LoadConfig() (*ConfigStore, error) {
 
 // AddService 添加一个新的 S3 服务配置到数据库
 func (cs *ConfigStore) AddService(service S3ServiceConfig) error {
-	_, err := db.Exec("INSERT INTO services (alias, endpoint, accessKey, secretKey, viewMode) VALUES (?, ?, ?, ?, ?)",
-		service.Alias, service.Endpoint, service.AccessKey, service.SecretKey, service.ViewMode)
+	_, err := db.Exec("INSERT INTO services (alias, endpoint, accessKey, secretKey, viewMode, proxy) VALUES (?, ?, ?, ?, ?, ?)",
+		service.Alias, service.Endpoint, service.AccessKey, service.SecretKey, service.ViewMode, service.Proxy)
 	if err != nil {
 		return fmt.Errorf("添加服务失败: %w", err)
 	}
@@ -165,8 +204,8 @@ func (cs *ConfigStore) AddService(service S3ServiceConfig) error {
 
 // UpdateService 更新一个 S3 服务配置到数据库
 func (cs *ConfigStore) UpdateService(oldAlias string, newService S3ServiceConfig) error {
-	_, err := db.Exec("UPDATE services SET alias = ?, endpoint = ?, accessKey = ?, secretKey = ?, viewMode = ? WHERE alias = ?",
-		newService.Alias, newService.Endpoint, newService.AccessKey, newService.SecretKey, newService.ViewMode, oldAlias)
+	_, err := db.Exec("UPDATE services SET alias = ?, endpoint = ?, accessKey = ?, secretKey = ?, viewMode = ?, proxy = ? WHERE alias = ?",
+		newService.Alias, newService.Endpoint, newService.AccessKey, newService.SecretKey, newService.ViewMode, newService.Proxy, oldAlias)
 	if err != nil {
 		return fmt.Errorf("更新服务失败: %w", err)
 	}

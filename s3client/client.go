@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io" // 导入 io 包
+	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -43,6 +45,20 @@ func NewS3Client(svcConfig appConfig.S3ServiceConfig) (*S3Client, error) {
 	)
 	if err != nil {
 		return nil, fmt.Errorf("加载 AWS 配置失败: %w", err)
+	}
+
+	// 如果配置了代理，则创建一个带有代理的 HTTP 客户端
+	if svcConfig.Proxy != "" {
+		proxyURL, err := url.Parse(svcConfig.Proxy)
+		if err != nil {
+			return nil, fmt.Errorf("解析代理 URL 失败: %w", err)
+		}
+		transport := &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+		}
+		cfg.HTTPClient = &http.Client{
+			Transport: transport,
+		}
 	}
 
 	// 创建 S3 客户端，并启用路径风格访问
