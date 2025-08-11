@@ -72,7 +72,7 @@ type BucketsView struct {
 	buckets          []string
 	selectedBucketID widget.ListItemID
 	deleteButton     *widget.Button
-	loadingIndicator *widget.ProgressBarInfinite
+	loadingIndicator *ThinProgressBar
 
 	OnBucketSelected func(bucketName string)
 }
@@ -82,7 +82,7 @@ func NewBucketsView(w fyne.Window) *BucketsView {
 	bv := &BucketsView{
 		window:           w,
 		selectedBucketID: -1,
-		loadingIndicator: widget.NewProgressBarInfinite(),
+		loadingIndicator: NewThinProgressBar(),
 	}
 	bv.loadingIndicator.Hide()
 	return bv
@@ -269,13 +269,15 @@ func (bv *BucketsView) GetContent() fyne.CanvasObject {
 		layout.NewSpacer(),
 	)
 
-	// 将列表和加载指示器放入一个堆栈容器中，使加载指示器可以覆盖在列表之上
-	listContainer := container.NewStack(
-		bv.bucketList,
-		bv.loadingIndicator,
-	)
+	topContent := container.NewVBox(buttonBox, widget.NewSeparator())
 
-	return container.NewBorder(buttonBox, nil, nil, nil, container.NewVBox(widget.NewSeparator()), listContainer)
+	// 创建一个用于裁剪进度条的滚动容器
+	clippedProgressBar := container.NewScroll(bv.loadingIndicator)
+	clippedProgressBar.SetMinSize(fyne.NewSize(0, bv.loadingIndicator.MinSize().Height)) // 确保它占用最小高度
 
-	return container.NewBorder(buttonBox, nil, nil, nil, container.NewVBox(widget.NewSeparator()), listContainer)
+	// 将列表和加载指示器放入一个堆栈容器中，并手动定位加载指示器在顶部
+	listContainer := container.NewStack(bv.bucketList, clippedProgressBar)
+	clippedProgressBar.Move(fyne.NewPos(0, 0)) // 手动定位到顶部
+
+	return container.NewBorder(topContent, nil, nil, nil, listContainer)
 }
