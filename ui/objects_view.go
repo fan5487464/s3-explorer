@@ -34,7 +34,7 @@ import (
 	"s3-explorer/s3client"
 )
 
-// --- Global Cache & Custom Types ---
+// --- 全局缓存与自定义类型 ---
 var (
 	thumbnailCache = make(map[string]fyne.Resource)
 	cacheLock      = sync.RWMutex{}
@@ -61,7 +61,7 @@ func (t *thumbnailResource) Content() []byte {
 	return buf.Bytes()
 }
 
-// --- Custom Widgets ---
+// --- 自定义组件 ---
 
 // tappableContainer 是一个可以捕获点击事件的容器
 type tappableContainer struct {
@@ -194,7 +194,7 @@ func (e *minWidthEntry) MinSize() fyne.Size {
 	return s
 }
 
-// --- Main View ---
+// --- 主视图 ---
 
 // ObjectsView 结构体用于管理右侧的文件/文件夹列表视图
 type ObjectsView struct {
@@ -947,7 +947,7 @@ func (ov *ObjectsView) startUploadFolderProcess(localPath string) {
 					continue
 				}
 
-				// S3 key must use forward slashes
+				// S3 key 必须使用正斜杠
 				s3Key := filepath.Join(ov.currentPrefix, baseFolderName, relPath)
 				s3Key = strings.ReplaceAll(s3Key, string(os.PathSeparator), "/")
 
@@ -961,7 +961,7 @@ func (ov *ObjectsView) startUploadFolderProcess(localPath string) {
 				}
 
 				err = ov.s3Client.UploadObject(ov.currentBucket, s3Key, file, fileInfo.Size())
-				file.Close() // Must close the file
+				file.Close() // 必须关闭文件
 				if err != nil {
 					log.Printf("上传文件 %s 失败: %v", filePath, err)
 					mu.Lock()
@@ -1106,27 +1106,27 @@ func (ov *ObjectsView) downloadFolder(folder s3client.S3Object, localBasePath st
 
 // deleteFolderAndContents 递归删除文件夹及其所有内容
 func (ov *ObjectsView) deleteFolderAndContents(bucket, prefix string) error {
-	// 1. List all objects under the prefix
+	// 1. 列出前缀下的所有对象
 	objects, err := ov.s3Client.ListAllObjectsUnderPrefix(bucket, prefix)
 	if err != nil {
 		return fmt.Errorf("列出文件夹 '%s' 内容失败: %w", prefix, err)
 	}
 
-	// 2. Create a list of keys to delete
+	// 2. 创建要删除的键列表
 	keysToDelete := make([]string, 0, len(objects)+1)
 	for _, obj := range objects {
 		keysToDelete = append(keysToDelete, obj.Key)
 	}
-	// 3. Add the folder object itself to the list
+	// 3. 将文件夹对象本身添加到列表
 	keysToDelete = append(keysToDelete, prefix)
 
-	// 4. Delete objects in parallel
+	// 4. 并行删除对象
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var deletionErrors []error
 
 	deleteChannel := make(chan string, len(keysToDelete))
-	numWorkers := 10 // A reasonable number of parallel workers
+	numWorkers := 10 // 合理的并行工作者数量
 
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
@@ -1136,7 +1136,7 @@ func (ov *ObjectsView) deleteFolderAndContents(bucket, prefix string) error {
 				err := ov.s3Client.DeleteObject(bucket, key)
 				if err != nil {
 					mu.Lock()
-					// Store the root error for reporting
+					// 存储根错误以供报告
 					if len(deletionErrors) == 0 {
 						deletionErrors = append(deletionErrors, err)
 					}
