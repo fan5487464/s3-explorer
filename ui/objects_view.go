@@ -294,7 +294,7 @@ type ObjectsView struct {
 	breadcrumbContainer *fyne.Container
 	selectedObjectIDs   map[widget.ListItemID]struct{}
 	lastSelectedID      widget.ListItemID
-	loadingIndicator    *widget.ProgressBarInfinite
+	loadingIndicator    *ThinProgressBar
 	downloadButton      *widget.Button
 	deleteButton        *widget.Button
 	serviceInfoButton   *widget.Button
@@ -325,7 +325,7 @@ func NewObjectsView(w fyne.Window) *ObjectsView {
 		window:            w,
 		selectedObjectIDs: make(map[widget.ListItemID]struct{}),
 		lastSelectedID:    -1,
-		loadingIndicator:  widget.NewProgressBarInfinite(),
+		loadingIndicator:  NewThinProgressBar(),
 		serviceInfoButton: widget.NewButton("未选择服务", func() {}),
 		currentPage:       1,
 		pageSize:          1000,
@@ -1200,7 +1200,19 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 	ov.mainContent = container.NewMax()
 	ov.refreshObjectView() // Initial view
 
-	return container.NewBorder(topBar, statusBar, nil, nil, container.NewVBox(widget.NewSeparator()), ov.mainContent)
+	// 创建一个用于裁剪进度条的滚动容器
+	clippedProgressBar := container.NewScroll(ov.loadingIndicator)
+	clippedProgressBar.SetMinSize(fyne.NewSize(0, ov.loadingIndicator.MinSize().Height))
+
+	// 将主内容区和裁剪后的加载指示器放入一个堆栈容器中
+	contentWithProgressBar := container.NewStack(ov.mainContent, clippedProgressBar)
+	clippedProgressBar.Move(fyne.NewPos(0, 0)) // 手动定位到顶部
+
+	centerContent := container.NewVBox(
+		widget.NewSeparator(),
+	)
+
+	return container.NewBorder(topBar, statusBar, nil, nil, centerContent, contentWithProgressBar)
 }
 
 // startUploadFolderProcess 启动文件夹上传流程
