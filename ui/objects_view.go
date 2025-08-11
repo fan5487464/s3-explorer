@@ -198,7 +198,7 @@ func (e *minWidthEntry) MinSize() fyne.Size {
 	return s
 }
 
-// --- Grid Entry Widget ---
+// --- 网格条目组件 ---
 
 type gridEntry struct {
 	widget.BaseWidget
@@ -269,7 +269,7 @@ func (e *gridEntry) MouseUp(_ *desktop.MouseEvent) {}
 func newGridEntry(ov *ObjectsView) *gridEntry {
 	icon := widget.NewIcon(theme.FileIcon())
 	nameLabel := widget.NewLabel("Filename")
-	nameLabel.Wrapping = fyne.TextWrapWord
+	nameLabel.Wrapping = fyne.TextTruncate // Change to truncate
 	nameLabel.Alignment = fyne.TextAlignCenter
 
 	entry := &gridEntry{
@@ -566,6 +566,17 @@ func (ov *ObjectsView) handleItemClick(id widget.ListItemID, m *desktop.MouseEve
 	}
 	ov.refreshSelection()
 	ov.updateButtonsState()
+
+	// 根据选择更新窗口标题
+	if len(ov.selectedObjectIDs) == 1 {
+		for selectedID := range ov.selectedObjectIDs { // 获取单个选定的ID
+			if selectedID < len(ov.objects) {
+				ov.window.SetTitle(fmt.Sprintf("S3 资源管理器 ---> %s", ov.objects[selectedID].Name))
+			}
+		}
+	} else {
+		ov.window.SetTitle("S3 资源管理器") // 默认标题
+	}
 }
 
 // unselectAllObjects 取消所有对象的选择
@@ -575,6 +586,7 @@ func (ov *ObjectsView) unselectAllObjects() {
 		ov.lastSelectedID = -1
 		ov.refreshSelection()
 		ov.updateButtonsState()
+		ov.window.SetTitle("S3 资源管理器") // 未选择任何内容时重置标题
 	}
 }
 
@@ -763,7 +775,7 @@ func (ov *ObjectsView) openWithDefaultApp(item s3client.S3Object) {
 	}()
 }
 
-// handleDrop handles dropped files and folders
+// handleDrop 处理拖放的文件和文件夹
 func (ov *ObjectsView) handleDrop(uris []fyne.URI) {
 	if ov.s3Client == nil || ov.currentBucket == "" {
 		dialog.ShowInformation("提示", "请先选择一个 S3 服务和存储桶才能上传。", ov.window)
@@ -796,7 +808,7 @@ func (ov *ObjectsView) handleDrop(uris []fyne.URI) {
 	}
 }
 
-// uploadSingleFile handles the upload of a single file from a local path
+// uploadSingleFile 处理从本地路径上传单个文件
 func (ov *ObjectsView) uploadSingleFile(localPath string) {
 	fileName := filepath.Base(localPath)
 	s3Key := ov.currentPrefix + fileName
@@ -831,7 +843,7 @@ func (ov *ObjectsView) uploadSingleFile(localPath string) {
 	})
 }
 
-// refreshObjectView is called when the data changes (loadObjects) or view mode switches.
+// refreshObjectView 在数据更改（加载对象）或视图模式切换时调用。
 func (ov *ObjectsView) refreshObjectView() {
 	if ov.mainContent == nil {
 		return
@@ -845,7 +857,7 @@ func (ov *ObjectsView) refreshObjectView() {
 	ov.mainContent.Refresh()
 }
 
-// refreshSelection is called when an item is selected/deselected.
+// refreshSelection 在项目被选中/取消选中时调用。
 func (ov *ObjectsView) refreshSelection() {
 	if ov.viewMode == gridViewMode {
 		if ov.mainContent != nil && len(ov.mainContent.Objects) > 0 {
@@ -919,7 +931,7 @@ func (ov *ObjectsView) createGridView() fyne.CanvasObject {
 		item := ov.objects[i]
 		entry := newGridEntry(ov)
 		entry.id = i
-		entry.nameLabel.SetText(item.Name)
+		entry.nameLabel.SetText(formatFileNameForDisplay(item.Name, 20)) // Format filename for single line display with truncation and extension
 		_, entry.selected = ov.selectedObjectIDs[i]
 
 		if item.IsFolder {
@@ -1527,6 +1539,31 @@ func isPreviewableImage(name string) bool {
 	default:
 		return false
 	}
+}
+
+// formatFileNameForDisplay 格式化文件名，确保单行显示，过长则截断并保留后缀
+func formatFileNameForDisplay(fileName string, maxDisplayLength int) string {
+	ext := filepath.Ext(fileName)
+	baseName := strings.TrimSuffix(fileName, ext)
+
+	// 计算去除“...”和扩展名后，基本名称的可用长度
+	// maxDisplayLength - len("...") - len(ext)
+	availableBaseLen := maxDisplayLength - 3 - len(ext) // 3 for "..."
+
+	if availableBaseLen < 0 { // If extension + "..." is already too long
+		// 这种情况意味着扩展名本身太长，无法适应maxDisplayLength
+		// 或者maxDisplayLength太小。
+		// 为简单起见，如果扩展名 + "..." 太长，则直接截断整个文件名。
+		if len(fileName) > maxDisplayLength {
+			return fileName[:maxDisplayLength-3] + "..."
+		}
+		return fileName
+	}
+
+	if len(baseName) > availableBaseLen {
+		return baseName[:availableBaseLen] + "..." + ext
+	}
+	return fileName
 }
 
 // formatBytes 格式化字节大小为可读的字符串
