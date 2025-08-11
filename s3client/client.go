@@ -69,53 +69,66 @@ func (sc *S3Client) ListBuckets() ([]string, error) {
 
 // S3Object 表示 S3 中的一个对象（文件或文件夹）
 type S3Object struct {
-	Name         string // 对象名称
+	Name         string // 对象的简称 (例如 "file.txt" 或 "subfolder")
+	Key          string // 对象的完整 S3 Key
 	IsFolder     bool   // 是否是文件夹
 	Size         int64  // 文件大小 (字节)
 	LastModified string // 最后修改时间
 }
 
-// ListObjects 列出指定存储桶和前缀下的对象
-func (sc *S3Client) ListObjects(bucketName, prefix string) ([]S3Object, error) {
+// ListObjects 列出指定存储桶和前缀下的对象（分页）
+func (sc *S3Client) ListObjects(bucketName, prefix, marker string, pageSize int32) ([]S3Object, *string, error) {
 	input := &s3.ListObjectsV2Input{
 		Bucket:    aws.String(bucketName),
 		Delimiter: aws.String("/"), // 用于区分文件夹
 		Prefix:    aws.String(prefix),
+		MaxKeys:   &pageSize,
+	}
+	if marker != "" {
+		input.ContinuationToken = aws.String(marker)
 	}
 
 	output, err := sc.client.ListObjectsV2(context.TODO(), input)
 	if err != nil {
-		return nil, fmt.Errorf("列出对象失败: %w", err)
+		return nil, nil, fmt.Errorf("列出对象失败: %w", err)
 	}
 
 	var objects []S3Object
 
 	// 处理 CommonPrefixes (文件夹)
 	for _, commonPrefix := range output.CommonPrefixes {
-		folderName := strings.TrimSuffix(*commonPrefix.Prefix, "/")
+		fullKey := *commonPrefix.Prefix
+		name := strings.TrimSuffix(fullKey, "/")
+		if prefix != "" {
+			name = strings.TrimPrefix(name, prefix)
+		}
+
 		objects = append(objects, S3Object{
-			Name:     folderName,
+			Name:     name,
+			Key:      fullKey,
 			IsFolder: true,
 		})
 	}
 
 	// 处理 Contents (文件)
 	for _, content := range output.Contents {
+		fullKey := *content.Key
 		// 排除当前前缀本身（如果它是一个文件）
-		if *content.Key == prefix {
+		if fullKey == prefix {
 			continue
 		}
 		// 提取文件名，去除前缀
-		fileName := strings.TrimPrefix(*content.Key, prefix)
+		fileName := strings.TrimPrefix(fullKey, prefix)
 		objects = append(objects, S3Object{
 			Name:         fileName,
+			Key:          fullKey,
 			IsFolder:     false,
 			Size:         *content.Size,
 			LastModified: content.LastModified.Format("2006-01-02 15:04:05"), // 格式化时间
 		})
 	}
 
-	return objects, nil
+	return objects, output.NextContinuationToken, nil
 }
 
 // UploadObject 上传文件到 S3
@@ -189,4 +202,55 @@ func (sc *S3Client) IsBucketEmpty(bucketName string) (bool, error) {
 		return false, fmt.Errorf("检查存储桶是否为空失败: %w", err)
 	}
 	return len(output.Contents) == 0 && len(output.CommonPrefixes) == 0, nil
+}
+
+// CreateFolder 在 S3 中创建一个文件夹（即一个以 / 结尾的 0 字节对象）
+func (sc *S3Client) CreateFolder(bucketName, key string) error {
+	// 确保 key 以 / 结尾
+	if !strings.HasSuffix(key, "/") {
+		key += "/"
+	}
+
+	_, err := sc.client.PutObject(context.TODO(), &s3.PutObjectInput{
+		Bucket: aws.String(bucketName),
+		Key:    aws.String(key),
+		Body:   strings.NewReader(""), // 空内容
+	})
+
+	if err != nil {
+		return fmt.Errorf("创建文件夹失败: %w", err)
+	}
+	return nil
+}
+
+// ListAllObjectsUnderPrefix 递归地列出指定前缀下的所有对象（仅文件）
+func (sc *S3Client) ListAllObjectsUnderPrefix(bucketName, prefix string) ([]S3Object, error) {
+	var objects []S3Object
+	paginator := s3.NewListObjectsV2Paginator(sc.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucketName),
+		Prefix: aws.String(prefix),
+	})
+
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(context.TODO())
+		if err != nil {
+			return nil, fmt.Errorf("列出对象失败: %w", err)
+		}
+
+		for _, content := range page.Contents {
+			// 忽略 S3 中的"文件夹"占位符对象（key 以 / 结尾且大小为 0）
+			if strings.HasSuffix(*content.Key, "/") && *content.Size == 0 {
+				continue
+			}
+			objects = append(objects, S3Object{
+				Name:         *content.Key, // 在这种情况下，Name 就是完整的 Key
+				Key:          *content.Key,
+				IsFolder:     false,
+				Size:         *content.Size,
+				LastModified: content.LastModified.Format("2006-01-02 15:04:05"),
+			})
+		}
+	}
+
+	return objects, nil
 }
