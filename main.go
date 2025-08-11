@@ -89,7 +89,7 @@ func showHelpDialog(w fyne.Window) {
 // showAboutDialog 显示关于对话框
 func showAboutDialog(w fyne.Window) {
 	ghURL, _ := url.Parse("https://github.com/fan5487464/s3-explorer")
-	gtURL, _ := url.Parse("https://gitee.com/fan5487464/s3-explorer") // Gitee 仓库地址
+	gtURL, _ := url.Parse("https://gitee.com/javaTrainee/s3-explorer") // Gitee 仓库地址
 
 	aboutContent := container.NewVBox(
 		widget.NewLabel("S3 Explorer"),
