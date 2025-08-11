@@ -94,17 +94,27 @@ func (sv *ServicesView) UpdateServiceViewMode(alias string, viewMode string) {
 	if sv.configStore == nil {
 		return
 	}
+
+	var serviceToUpdate config.S3ServiceConfig
 	found := false
-	for i, s := range sv.configStore.Services {
+	for _, s := range sv.configStore.Services {
 		if s.Alias == alias {
-			sv.configStore.Services[i].ViewMode = viewMode
+			serviceToUpdate = s
 			found = true
 			break
 		}
 	}
 
 	if found {
-		sv.saveConfig()
+		serviceToUpdate.ViewMode = viewMode
+		err := sv.configStore.UpdateService(alias, serviceToUpdate)
+		if err != nil {
+			log.Printf("更新服务 '%s' 的视图模式失败: %v", alias, err)
+			// 可以在这里显示一个错误对话框，但由于这是后台操作，日志可能更合适
+		} else {
+			// 成功更新后，重新加载配置以确保 UI 同步
+			sv.loadConfig()
+		}
 	} else {
 		log.Printf("无法找到服务 '%s' 来更新视图模式。", alias)
 	}
@@ -162,14 +172,6 @@ func (sv *ServicesView) loadConfig() {
 			sv.refreshServiceList()
 		})
 	}()
-}
-
-// saveConfig 保存 S3 服务配置
-func (sv *ServicesView) saveConfig() {
-	err := config.SaveConfig(sv.configStore)
-	if err != nil {
-		dialog.ShowError(fmt.Errorf("保存配置失败: %v", err), sv.window)
-	}
 }
 
 // refreshServiceList 刷新服务列表显示
@@ -246,9 +248,21 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 					dialog.ShowInformation("提示", "所有字段都不能为空！", sv.window)
 					return
 				}
-				sv.configStore.AddService(newService)
-				sv.saveConfig()
+				err := sv.configStore.AddService(newService)
+				if err != nil {
+					dialog.ShowError(fmt.Errorf("添加服务失败: %v", err), sv.window)
+					return
+				}
+				sv.loadConfig()
 				sv.refreshServiceList()
+				// 添加后，如果选择了服务，请重新选择它以更新右侧面板
+				if sv.selectedServiceID != -1 && sv.OnServiceSelected != nil {
+					// 如果新添加的服务是第一个，确保选择它
+					if len(sv.configStore.Services) == 1 {
+						sv.selectedServiceID = 0
+					}
+					sv.OnServiceSelected(sv.configStore.Services[sv.selectedServiceID])
+				}
 			}
 		}, sv.window)
 		d.Resize(fyne.NewSize(400, 250))
@@ -262,6 +276,7 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 			return
 		}
 		selectedService := sv.configStore.Services[sv.selectedServiceID]
+		oldAlias := selectedService.Alias // Capture old alias before newService is created
 		formContent, aliasEntry, endpointEntry, accessKeyEntry, secretKeyEntry := sv.createServiceFormContent(&selectedService)
 		d := dialog.NewCustomConfirm("编辑 S3 服务", "保存", "取消", formContent, func(confirmed bool) {
 			if confirmed {
@@ -276,9 +291,34 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 					dialog.ShowInformation("提示", "所有字段都不能为空！", sv.window)
 					return
 				}
-				sv.configStore.UpdateService(selectedService.Alias, newService)
-				sv.saveConfig()
+				err := sv.configStore.UpdateService(oldAlias, newService)
+				if err != nil {
+					dialog.ShowError(fmt.Errorf("更新服务失败: %v", err), sv.window)
+					return
+				}
+				sv.loadConfig()
 				sv.refreshServiceList()
+
+				// 找到更新后的服务的新索引并重新选择它
+				newlySelectedID := -1
+				for i, svc := range sv.configStore.Services {
+					if svc.Alias == newService.Alias { // Find by new alias
+						newlySelectedID = i
+						break
+					}
+				}
+
+				if newlySelectedID != -1 && sv.OnServiceSelected != nil {
+					sv.selectedServiceID = newlySelectedID // Update selected ID
+					sv.OnServiceSelected(sv.configStore.Services[sv.selectedServiceID])
+				} else {
+					// If for some reason the service is not found after update (shouldn't happen),
+					// or if no service was selected before, clear the right panel.
+					sv.selectedServiceID = -1
+					if sv.OnServiceSelected != nil {
+						sv.OnServiceSelected(config.S3ServiceConfig{})
+					}
+				}
 			}
 		}, sv.window)
 		d.Resize(fyne.NewSize(400, 250))
@@ -295,12 +335,25 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 
 		dialog.ShowConfirm("确认删除", fmt.Sprintf("确定要删除服务 \"%s\" 吗？", selectedService.Alias), func(confirmed bool) {
 			if confirmed {
-				sv.configStore.DeleteService(selectedService.Alias)
-				sv.saveConfig()
+				err := sv.configStore.DeleteService(selectedService.Alias)
+				if err != nil {
+					dialog.ShowError(fmt.Errorf("删除服务失败: %v", err), sv.window)
+					return
+				}
+				sv.loadConfig()
 				sv.refreshServiceList()
-				sv.selectedServiceID = -1 // 重置选中 ID
-				if sv.OnServiceSelected != nil {
-					sv.OnServiceSelected(config.S3ServiceConfig{})
+				// 删除后如果仍有服务并且选择了服务，
+				// 尝试重新选择第一个服务或清除右侧面板。
+				if len(sv.configStore.Services) > 0 {
+					sv.selectedServiceID = 0 // 选择第一项服务
+					if sv.OnServiceSelected != nil {
+						sv.OnServiceSelected(sv.configStore.Services[sv.selectedServiceID])
+					}
+				} else {
+					sv.selectedServiceID = -1 // 没有剩余服务
+					if sv.OnServiceSelected != nil {
+						sv.OnServiceSelected(config.S3ServiceConfig{})
+					}
 				}
 			}
 		}, sv.window)

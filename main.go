@@ -103,6 +103,11 @@ func showAboutDialog(w fyne.Window) {
 }
 
 func main() {
+	// 初始化数据库
+	if err := config.InitDB(); err != nil {
+		log.Fatalf("数据库初始化失败: %v", err)
+	}
+
 	// 创建一个新的 Fyne 应用，并指定一个唯一的 ID
 	a := app.NewWithID("com.yourcompany.s3explorer")
 

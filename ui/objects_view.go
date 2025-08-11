@@ -361,11 +361,17 @@ func (ov *ObjectsView) SetViewMode(mode string) {
 // SetServiceAlias 设置并显示当前服务的别名
 func (ov *ObjectsView) SetServiceAlias(alias string) {
 	ov.currentServiceAlias = alias
-	if alias != "" {
-		ov.serviceInfoButton.SetText(fmt.Sprintf("当前服务: %s", alias))
-	} else {
-		ov.serviceInfoButton.SetText("未选择服务")
-	}
+	fyne.Do(func() {
+		if alias != "" {
+			ov.serviceInfoButton.SetText(fmt.Sprintf("当前服务: %s", alias))
+		} else {
+			ov.serviceInfoButton.SetText("未选择服务")
+		}
+		ov.serviceInfoButton.Refresh()
+		if ov.mainContent != nil {
+			ov.mainContent.Refresh()
+		}
+	})
 }
 
 // SetBucketAndPrefix 设置当前存储桶和前缀，并加载对象列表

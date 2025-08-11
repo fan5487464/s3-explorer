@@ -1,11 +1,16 @@
 package config
 
 import (
-	"encoding/json" // 导入 json 包用于 JSON 序列化和反序列化
-	"io/ioutil"     // 导入 ioutil 包用于文件读写
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"io/ioutil"
 	"log"
-	"os"            // 导入 os 包用于文件系统操作
-	"path/filepath" // 导入 path/filepath 包用于路径操作
+	"os"
+	"path/filepath"
+	"strings"
+
+	_ "github.com/mattn/go-sqlite3" // SQLite 驱动
 )
 
 // S3ServiceConfig 定义单个 S3 服务的配置信息
@@ -22,86 +27,157 @@ type ConfigStore struct {
 	Services []S3ServiceConfig `json:"services"` // S3 服务配置列表
 }
 
-// configFilePath 返回配置文件的完整路径
-func configFilePath() (string, error) {
+var db *sql.DB
+
+// initDB 初始化 SQLite 数据库连接和表
+func InitDB() error {
 	configDir, err := os.UserConfigDir()
 	if err != nil {
-		return "", err
+		return fmt.Errorf("获取用户配置目录失败: %w", err)
 	}
-	// 在用户配置目录下创建 s3-explorer 目录
 	appConfigDir := filepath.Join(configDir, "s3-explorer")
-	// 确保目录存在
-	err = os.MkdirAll(appConfigDir, 0755)
-	if err != nil {
-		return "", err
+	if err := os.MkdirAll(appConfigDir, 0755); err != nil {
+		return fmt.Errorf("创建应用配置目录失败: %w", err)
 	}
-	log.Println("appConfigDir:", appConfigDir)
-	return filepath.Join(appConfigDir, "servers.json"), nil
+	dbPath := filepath.Join(appConfigDir, "s3-explorer.db")
+
+	db, err = sql.Open("sqlite3", dbPath)
+	if err != nil {
+		return fmt.Errorf("打开数据库失败: %w", err)
+	}
+
+	// 创建 services 表
+	createTableSQL := `
+	CREATE TABLE IF NOT EXISTS services (
+		alias TEXT NOT NULL PRIMARY KEY,
+		endpoint TEXT NOT NULL,
+		accessKey TEXT NOT NULL,
+		secretKey TEXT NOT NULL,
+		viewMode TEXT
+	);`
+	_, err = db.Exec(createTableSQL)
+	if err != nil {
+		return fmt.Errorf("创建 services 表失败: %w", err)
+	}
+
+	// 检查是否需要从旧的 JSON 文件迁移数据
+	jsonFilePath := filepath.Join(appConfigDir, "servers.json")
+	if _, err := os.Stat(jsonFilePath); err == nil {
+		// JSON 文件存在，检查数据库是否为空
+		var count int
+		err := db.QueryRow("SELECT COUNT(*) FROM services").Scan(&count)
+		if err != nil {
+			return fmt.Errorf("查询 services 表记录数失败: %w", err)
+		}
+
+		if count == 0 {
+			log.Println("检测到旧的 servers.json 文件，开始迁移数据...")
+			err := migrateFromJSON(jsonFilePath)
+			if err != nil {
+				return fmt.Errorf("从 JSON 文件迁移数据失败: %w", err)
+			}
+			log.Println("数据迁移完成，旧的 servers.json 文件将被删除。")
+			// 迁移成功后删除旧的 JSON 文件
+			if err := os.Remove(jsonFilePath); err != nil {
+				log.Printf("删除旧的 servers.json 文件失败: %v", err)
+			}
+		} else {
+			log.Println("检测到旧的 servers.json 文件，但数据库中已有数据，跳过迁移。")
+		}
+	}
+
+	return nil
 }
 
-// LoadConfig 从文件中加载 S3 服务配置
-func LoadConfig() (*ConfigStore, error) {
-	filePath, err := configFilePath()
-	if err != nil {
-		return nil, err
-	}
-
+// migrateFromJSON 从旧的 JSON 文件中读取数据并插入到 SQLite 数据库
+func migrateFromJSON(filePath string) error {
 	data, err := ioutil.ReadFile(filePath)
 	if err != nil {
-		// 如果文件不存在，返回一个空的配置存储，而不是错误
-		if os.IsNotExist(err) {
-			return &ConfigStore{Services: []S3ServiceConfig{}}, nil
-		}
-		return nil, err
+		return fmt.Errorf("读取 JSON 文件失败: %w", err)
 	}
 
 	var store ConfigStore
 	err = json.Unmarshal(data, &store)
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("解析 JSON 数据失败: %w", err)
 	}
 
-	return &store, nil
-}
-
-// SaveConfig 将 S3 服务配置保存到文件
-func SaveConfig(store *ConfigStore) error {
-	filePath, err := configFilePath()
+	tx, err := db.Begin()
 	if err != nil {
-		return err
+		return fmt.Errorf("开始事务失败: %w", err)
 	}
+	defer tx.Rollback() // 发生错误时回滚
 
-	data, err := json.MarshalIndent(store, "", "  ") // 使用 MarshalIndent 格式化输出，便于阅读
+	stmt, err := tx.Prepare("INSERT INTO services (alias, endpoint, accessKey, secretKey, viewMode) VALUES (?, ?, ?, ?, ?)")
 	if err != nil {
-		return err
+		return fmt.Errorf("准备插入语句失败: %w", err)
 	}
+	defer stmt.Close()
 
-	return ioutil.WriteFile(filePath, data, 0644)
-}
-
-// AddService 添加一个新的 S3 服务配置
-func (cs *ConfigStore) AddService(service S3ServiceConfig) {
-	cs.Services = append(cs.Services, service)
-}
-
-// UpdateService 更新一个 S3 服务配置
-// 根据别名查找并更新，如果找不到则不执行任何操作
-func (cs *ConfigStore) UpdateService(oldAlias string, newService S3ServiceConfig) {
-	for i, s := range cs.Services {
-		if s.Alias == oldAlias {
-			cs.Services[i] = newService
-			return
+	for _, svc := range store.Services {
+		_, err := stmt.Exec(svc.Alias, svc.Endpoint, svc.AccessKey, svc.SecretKey, svc.ViewMode)
+		if err != nil {
+			// 如果是主键冲突，可能是因为用户手动创建了同名服务，跳过
+			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+				log.Printf("服务 '%s' 已存在于数据库中，跳过插入。", svc.Alias)
+				continue
+			}
+			return fmt.Errorf("插入服务 '%s' 失败: %w", svc.Alias, err)
 		}
 	}
+
+	return tx.Commit()
 }
 
-// DeleteService 删除一个 S3 服务配置
-// 根据别名查找并删除，如果找不到则不执行任何操作
-func (cs *ConfigStore) DeleteService(alias string) {
-	for i, s := range cs.Services {
-		if s.Alias == alias {
-			cs.Services = append(cs.Services[:i], cs.Services[i+1:]...)
-			return
-		}
+// LoadConfig 从数据库加载 S3 服务配置
+func LoadConfig() (*ConfigStore, error) {
+	rows, err := db.Query("SELECT alias, endpoint, accessKey, secretKey, viewMode FROM services")
+	if err != nil {
+		return nil, fmt.Errorf("查询服务失败: %w", err)
 	}
+	defer rows.Close()
+
+	var services []S3ServiceConfig
+	for rows.Next() {
+		var svc S3ServiceConfig
+		if err := rows.Scan(&svc.Alias, &svc.Endpoint, &svc.AccessKey, &svc.SecretKey, &svc.ViewMode); err != nil {
+			return nil, fmt.Errorf("扫描服务数据失败: %w", err)
+		}
+		services = append(services, svc)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历服务结果集失败: %w", err)
+	}
+
+	return &ConfigStore{Services: services}, nil
+}
+
+// AddService 添加一个新的 S3 服务配置到数据库
+func (cs *ConfigStore) AddService(service S3ServiceConfig) error {
+	_, err := db.Exec("INSERT INTO services (alias, endpoint, accessKey, secretKey, viewMode) VALUES (?, ?, ?, ?, ?)",
+		service.Alias, service.Endpoint, service.AccessKey, service.SecretKey, service.ViewMode)
+	if err != nil {
+		return fmt.Errorf("添加服务失败: %w", err)
+	}
+	return nil
+}
+
+// UpdateService 更新一个 S3 服务配置到数据库
+func (cs *ConfigStore) UpdateService(oldAlias string, newService S3ServiceConfig) error {
+	_, err := db.Exec("UPDATE services SET alias = ?, endpoint = ?, accessKey = ?, secretKey = ?, viewMode = ? WHERE alias = ?",
+		newService.Alias, newService.Endpoint, newService.AccessKey, newService.SecretKey, newService.ViewMode, oldAlias)
+	if err != nil {
+		return fmt.Errorf("更新服务失败: %w", err)
+	}
+	return nil
+}
+
+// DeleteService 从数据库删除一个 S3 服务配置
+func (cs *ConfigStore) DeleteService(alias string) error {
+	_, err := db.Exec("DELETE FROM services WHERE alias = ?", alias)
+	if err != nil {
+		return fmt.Errorf("删除服务失败: %w", err)
+	}
+	return nil
 }
