@@ -87,6 +87,27 @@ func NewServicesView(w fyne.Window) *ServicesView {
 	return sv
 }
 
+// UpdateServiceViewMode 更新内存中服务的视图模式并保存到文件
+func (sv *ServicesView) UpdateServiceViewMode(alias string, viewMode string) {
+	if sv.configStore == nil {
+		return
+	}
+	found := false
+	for i, s := range sv.configStore.Services {
+		if s.Alias == alias {
+			sv.configStore.Services[i].ViewMode = viewMode
+			found = true
+			break
+		}
+	}
+
+	if found {
+		sv.saveConfig()
+	} else {
+		log.Printf("无法找到服务 '%s' 来更新视图模式。", alias)
+	}
+}
+
 func (sv *ServicesView) handleServiceTapped(id widget.ListItemID) {
 	// 如果点击的是已选中的项，则取消选择
 	if sv.selectedServiceID == id {
@@ -232,6 +253,7 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 					Endpoint:  endpointEntry.Text,
 					AccessKey: accessKeyEntry.Text,
 					SecretKey: secretKeyEntry.Text,
+					ViewMode:  selectedService.ViewMode, // 保留旧的视图模式
 				}
 				if newService.Alias == "" || newService.Endpoint == "" || newService.AccessKey == "" || newService.SecretKey == "" {
 					dialog.ShowInformation("提示", "所有字段都不能为空！", sv.window)

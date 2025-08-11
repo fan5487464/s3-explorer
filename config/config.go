@@ -10,10 +10,11 @@ import (
 
 // S3ServiceConfig 定义单个 S3 服务的配置信息
 type S3ServiceConfig struct {
-	Alias     string `json:"alias"`     // 服务别名，用于显示
-	Endpoint  string `json:"endpoint"`  // S3 服务地址，例如："s3.amazonaws.com" 或 "localhost:9000"
-	AccessKey string `json:"accessKey"` // 访问密钥 ID
-	SecretKey string `json:"secretKey"` // 秘密访问密钥
+	Alias     string `json:"alias"`               // 服务别名，用于显示
+	Endpoint  string `json:"endpoint"`            // S3 服务地址，例如："s3.amazonaws.com" 或 "localhost:9000"
+	AccessKey string `json:"accessKey"`           // 访问密钥 ID
+	SecretKey string `json:"secretKey"`           // 秘密访问密钥
+	ViewMode  string `json:"view_mode,omitempty"` // 视图模式 ("list" or "grid")
 }
 
 // ConfigStore 存储所有 S3 服务的配置列表

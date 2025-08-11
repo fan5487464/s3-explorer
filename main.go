@@ -61,15 +61,18 @@ func main() {
 	// 创建一个新窗口
 	w := a.NewWindow("S3 资源管理器")
 
-	// 创建 ObjectsView 实例
+	// 创建 UI 视图实例
 	objectsView := ui.NewObjectsView(w)
-
-	// 创建 BucketsView 实例
 	bucketsView := ui.NewBucketsView(w)
+	servicesView := ui.NewServicesView(w)
 
-	// 设置 BucketsView 的回调函数，当选中存储桶时，更新 ObjectsView
+	// --- 设置视图间的交互回调 ---
+
+	// 当对象视图的模式改变时，更新服务视图中的配置
+	objectsView.OnViewModeChanged = servicesView.UpdateServiceViewMode
+
+	// 当选中存储桶时，更新对象视图
 	bucketsView.OnBucketSelected = func(bucketName string) {
-		// 确保 s3Client 已经设置，否则无法列出对象
 		if bucketsView.S3Client != nil {
 			objectsView.SetBucketAndPrefix(bucketsView.S3Client, bucketName, "")
 		} else {
@@ -77,13 +80,10 @@ func main() {
 		}
 	}
 
-	// 设置 ServicesView 的回调函数，当选中服务时，更新 BucketsView
-	servicesView := ui.NewServicesView(w)
+	// 当选中服务时，更新存储桶和对象视图
 	servicesView.OnServiceSelected = func(svc config.S3ServiceConfig) {
-		// 更新对象视图中显示的服务别名
 		objectsView.SetServiceAlias(svc.Alias)
 
-		// 如果传入的 svc 是空的（表示取消选择），则清空后续视图
 		if svc.Alias == "" && svc.Endpoint == "" && svc.AccessKey == "" {
 			bucketsView.SetS3Client(nil)
 			objectsView.SetBucketAndPrefix(nil, "", "")
@@ -94,35 +94,39 @@ func main() {
 		if err != nil {
 			log.Printf("创建 S3 客户端失败: %v", err)
 			dialog.ShowError(fmt.Errorf("创建 S3 客户端失败: %v", err), w)
-			bucketsView.SetS3Client(nil)                // 清空存储桶列表
-			objectsView.SetBucketAndPrefix(nil, "", "") // 清空对象列表
+			bucketsView.SetS3Client(nil)
+			objectsView.SetBucketAndPrefix(nil, "", "")
 			return
 		}
+
+		// 根据服务的配置设置视图模式
+		objectsView.SetViewMode(svc.ViewMode)
+
 		bucketsView.SetS3Client(client)
 		objectsView.SetBucketAndPrefix(client, "", "") // 清空对象列表，等待存储桶选择
 	}
 
-	// 创建内层水平分割容器，用于中间存储桶列表和右侧文件/文件夹列表
+	// --- 布局设置 ---
+
+	// 内层分割：存储桶(中) | 对象(右)
 	innerSplit := container.NewHSplit(
-		bucketsView.GetContent(), // 中间存储桶列表
-		objectsView.GetContent(), // 右侧文件/文件夹列表
+		bucketsView.GetContent(),
+		objectsView.GetContent(),
 	)
 	// 内层分割比例：中间占 1.5 / (1.5 + 7) = 1.5 / 8.5
-	innerSplit.Offset = 1.5 / 8.5
+	innerSplit.Offset = 1.0 / 9.0
 
-	// 创建外层水平分割容器，用于左侧服务列表和内层分割容器
+	// 外层分割：服务(左) | 内层
 	content := container.NewHSplit(
-		servicesView.GetContent(), // 左侧服务列表
+		servicesView.GetContent(),
 		innerSplit,
 	)
 	// 外层分割比例：左侧占 1.5 / 10.0 = 0.15
-	content.Offset = 0.15
+	content.Offset = 0.1
 
-	// 设置窗口内容
+	// 设置窗口内容和大小
 	w.SetContent(content)
-
-	// 设置窗口大小
-	w.Resize(fyne.NewSize(1024, 768))
+	w.Resize(fyne.NewSize(1280, 720))
 
 	// 显示并运行窗口
 	w.ShowAndRun()

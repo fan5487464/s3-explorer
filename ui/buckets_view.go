@@ -260,9 +260,11 @@ func (bv *BucketsView) GetContent() fyne.CanvasObject {
 	buttonBox := container.NewHBox(
 		layout.NewSpacer(),
 		createBucketButton,
+		layout.NewSpacer(),
 		bv.deleteButton,
 		layout.NewSpacer(),
 		bv.loadingIndicator,
+		layout.NewSpacer(),
 	)
 
 	return container.NewBorder(buttonBox, nil, nil, nil, container.NewVBox(widget.NewSeparator()), bv.bucketList)

@@ -202,7 +202,7 @@ func (e *minWidthEntry) MinSize() fyne.Size {
 
 type gridEntry struct {
 	widget.BaseWidget
-	icon      *canvas.Image
+	icon      *widget.Icon // 使用 widget.Icon 以便资源更新后能自动刷新
 	nameLabel *widget.Label
 
 	id widget.ListItemID
@@ -245,6 +245,7 @@ func (r *gridEntryRenderer) Refresh() {
 
 func (e *gridEntry) CreateRenderer() fyne.WidgetRenderer {
 	bg := canvas.NewRectangle(color.Transparent)
+	// 使用 Border 布局，图标在上，标签在下
 	content := container.NewBorder(nil, e.nameLabel, nil, nil, e.icon)
 	return &gridEntryRenderer{
 		entry:      e,
@@ -266,9 +267,7 @@ func (e *gridEntry) MouseDown(m *desktop.MouseEvent) {
 func (e *gridEntry) MouseUp(_ *desktop.MouseEvent) {}
 
 func newGridEntry(ov *ObjectsView) *gridEntry {
-	icon := canvas.NewImageFromResource(theme.FileIcon())
-	icon.SetMinSize(fyne.NewSize(64, 64))
-	icon.FillMode = canvas.ImageFillContain
+	icon := widget.NewIcon(theme.FileIcon())
 	nameLabel := widget.NewLabel("Filename")
 	nameLabel.Wrapping = fyne.TextWrapWord
 	nameLabel.Alignment = fyne.TextAlignCenter
@@ -311,9 +310,13 @@ type ObjectsView struct {
 	pageSizeEntry  *minWidthEntry
 
 	// 视图切换
-	viewMode         string
-	viewSwitchButton *widget.Button
-	mainContent      *fyne.Container
+	viewMode            string
+	viewSwitchButton    *widget.Button
+	mainContent         *fyne.Container
+	currentServiceAlias string
+
+	// OnViewModeChanged 是一个回调函数，当视图模式改变时触发
+	OnViewModeChanged func(alias, newMode string)
 }
 
 // NewObjectsView 创建并返回一个新的 ObjectsView 实例
@@ -340,8 +343,24 @@ func NewObjectsView(w fyne.Window) *ObjectsView {
 	return ov
 }
 
+// SetViewMode 设置当前对象视图的模式（列表或网格）
+func (ov *ObjectsView) SetViewMode(mode string) {
+	if ov.viewSwitchButton == nil {
+		return
+	}
+	if mode == gridViewMode {
+		ov.viewMode = gridViewMode
+		ov.viewSwitchButton.SetIcon(theme.ListIcon())
+	} else {
+		ov.viewMode = listViewMode
+		ov.viewSwitchButton.SetIcon(theme.GridIcon())
+	}
+	ov.refreshObjectView()
+}
+
 // SetServiceAlias 设置并显示当前服务的别名
 func (ov *ObjectsView) SetServiceAlias(alias string) {
+	ov.currentServiceAlias = alias
 	if alias != "" {
 		ov.serviceInfoButton.SetText(fmt.Sprintf("当前服务: %s", alias))
 	} else {
@@ -444,7 +463,7 @@ func (ov *ObjectsView) generateThumbnail(index int, item s3client.S3Object) {
 		return
 	}
 
-	thumb := resize.Thumbnail(64, 64, img, resize.Lanczos3)
+	thumb := resize.Thumbnail(80, 80, img, resize.Lanczos3)
 	thumbRes := &thumbnailResource{name: item.Key, img: thumb}
 
 	cacheLock.Lock()
@@ -462,11 +481,7 @@ func (ov *ObjectsView) generateThumbnail(index int, item s3client.S3Object) {
 					if grid, ok := scroll.Content.(*fyne.Container); ok {
 						if index < len(grid.Objects) {
 							if entry, ok := grid.Objects[index].(*gridEntry); ok {
-								cacheLock.RLock()
-								thumb, _ := thumbnailCache[item.Key]
-								cacheLock.RUnlock()
-								entry.icon.Resource = thumb
-								entry.Refresh()
+								entry.icon.SetResource(thumbRes)
 							}
 						}
 					}
@@ -877,7 +892,7 @@ func (ov *ObjectsView) createGridView() fyne.CanvasObject {
 		_, entry.selected = ov.selectedObjectIDs[i]
 
 		if item.IsFolder {
-			entry.icon.Resource = theme.FolderIcon()
+			entry.icon.SetResource(theme.FolderIcon())
 			entry.doubleTapped = func() {
 				ov.SetBucketAndPrefix(ov.s3Client, ov.currentBucket, item.Key)
 			}
@@ -887,12 +902,12 @@ func (ov *ObjectsView) createGridView() fyne.CanvasObject {
 				thumb, exists := thumbnailCache[item.Key]
 				cacheLock.RUnlock()
 				if exists {
-					entry.icon.Resource = thumb
+					entry.icon.SetResource(thumb)
 				} else {
-					entry.icon.Resource = theme.FileImageIcon()
+					entry.icon.SetResource(theme.FileImageIcon())
 				}
 			} else {
-				entry.icon.Resource = getIconForFile(item.Name)
+				entry.icon.SetResource(getIconForFile(item.Name))
 			}
 			entry.doubleTapped = func() {
 				ov.showPreviewWindow(item)
@@ -1002,7 +1017,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 
 		dialog.ShowFolderOpen(func(uri fyne.ListableURI, err error) {
 			if err != nil {
-					dialog.ShowError(err, ov.window)
+				dialog.ShowError(err, ov.window)
 				return
 			}
 			if uri == nil {
@@ -1077,6 +1092,12 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 			ov.viewMode = listViewMode
 			ov.viewSwitchButton.SetIcon(theme.GridIcon())
 		}
+
+		// 通过回调通知父级保存视图偏好
+		if ov.OnViewModeChanged != nil && ov.currentServiceAlias != "" {
+			go ov.OnViewModeChanged(ov.currentServiceAlias, ov.viewMode)
+		}
+
 		ov.refreshObjectView()
 	})
 
