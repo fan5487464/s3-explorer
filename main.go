@@ -6,14 +6,16 @@ import (
 	"image/color" // 导入 image/color 包用于颜色定义
 	"io/ioutil"   // 导入 ioutil 包用于读取文件
 	"log"         // 导入 log 包用于日志输出
+	"net/url"
 	"s3-explorer/config"
 
 	"fyne.io/fyne/v2"           // 导入 fyne 主包
 	"fyne.io/fyne/v2/app"       // 导入 fyne 应用包
 	"fyne.io/fyne/v2/container" // 导入 fyne 容器包
 	"fyne.io/fyne/v2/theme"     // 导入 fyne 主题包
-	"s3-explorer/s3client"      // 导入 s3client 包
-	"s3-explorer/ui"            // 导入 ui 包
+	"fyne.io/fyne/v2/widget"
+	"s3-explorer/s3client" // 导入 s3client 包
+	"s3-explorer/ui"       // 导入 ui 包
 )
 
 // customTheme 自定义主题结构体
@@ -22,6 +24,10 @@ type customTheme struct{}
 // Color 返回主题特定颜色
 // 实现了 fyne.Theme 接口的 Color 方法
 func (t *customTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	// 为了让禁用的文本可读，我们覆盖禁用颜色
+	if name == theme.ColorNameDisabled {
+		return theme.DefaultTheme().Color(theme.ColorNameForeground, variant)
+	}
 	return theme.DefaultTheme().Color(name, variant)
 }
 
@@ -51,6 +57,54 @@ func (t *customTheme) Size(name fyne.ThemeSizeName) float32 {
 	return theme.DefaultTheme().Size(name)
 }
 
+// showHelpDialog 显示帮助说明对话框
+func showHelpDialog(w fyne.Window) {
+	helpText := `S3 Explorer 使用说明:
+
+1. 添加服务:
+   - 点击左上角的 "+" 按钮。
+   - 填写服务别名、Endpoint、Access Key 和 Secret Key。
+   - 点击 "添加" 保存。
+
+2. 浏览和操作:
+   - 左侧列表选择一个服务。
+   - 中间列表会显示存储桶，点击进入。
+   - 右侧列表显示文件和文件夹。
+   - 使用顶部的按钮进行创建文件夹、上传、下载、删除等操作。
+   - 双击文件可进行预览。
+   - 将文件或文件夹从系统拖拽到窗口内可直接上传。
+
+3. 视图切换:
+   - 点击右上角的视图切换按钮可在列表和缩略图模式间切换。
+   - 程序会为每个服务记住您的视图偏好。
+`
+	content := widget.NewMultiLineEntry()
+	content.SetText(helpText)
+	content.Wrapping = fyne.TextWrapWord
+	content.Disable()
+
+	scrollableContent := container.NewScroll(content)
+	d := dialog.NewCustom("使用说明", "关闭", scrollableContent, w)
+	d.Resize(fyne.NewSize(500, 400))
+	d.Show()
+}
+
+// showAboutDialog 显示关于对话框
+func showAboutDialog(w fyne.Window) {
+	ghURL, _ := url.Parse("https://github.com/fan5487464/s3-explorer")
+	gtURL, _ := url.Parse("https://gitee.com/fan5487464/s3-explorer") // Gitee 仓库地址
+
+	aboutContent := container.NewVBox(
+		widget.NewLabel("S3 Explorer"),
+		widget.NewLabel("版本: 1.0.0"),
+		widget.NewLabel("一个简单的 S3 兼容对象存储桌面浏览器。"),
+		widget.NewHyperlink("GitHub 仓库", ghURL),
+		widget.NewHyperlink("Gitee 仓库", gtURL),
+	)
+
+	dialog.ShowCustom("关于 S3 Explorer", "关闭", aboutContent, w)
+}
+
 func main() {
 	// 创建一个新的 Fyne 应用，并指定一个唯一的 ID
 	a := app.NewWithID("com.yourcompany.s3explorer")
@@ -60,6 +114,22 @@ func main() {
 
 	// 创建一个新窗口
 	w := a.NewWindow("S3 资源管理器")
+
+	// --- 创建主菜单 ---
+	helpMenu := fyne.NewMenu("帮助",
+		fyne.NewMenuItem("使用说明", func() {
+			showHelpDialog(w)
+		}),
+	)
+
+	aboutMenu := fyne.NewMenu("关于",
+		fyne.NewMenuItem("关于 S3 Explorer", func() {
+			showAboutDialog(w)
+		}),
+	)
+
+	mainMenu := fyne.NewMainMenu(helpMenu, aboutMenu)
+	w.SetMainMenu(mainMenu)
 
 	// 创建 UI 视图实例
 	objectsView := ui.NewObjectsView(w)
@@ -113,7 +183,7 @@ func main() {
 		bucketsView.GetContent(),
 		objectsView.GetContent(),
 	)
-	// 内层分割比例：中间占 1.5 / (1.5 + 7) = 1.5 / 8.5
+	// 内层分割比例：中间占 1.0 / (1.0 + 8) = 1.0 / 9.0
 	innerSplit.Offset = 1.0 / 9.0
 
 	// 外层分割：服务(左) | 内层

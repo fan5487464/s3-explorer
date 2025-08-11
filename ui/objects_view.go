@@ -673,8 +673,8 @@ func (ov *ObjectsView) showInAppPreview(item s3client.S3Object, previewType stri
 		} else {
 			textEntry := widget.NewMultiLineEntry()
 			textEntry.SetText(string(data))
-			textEntry.Disable()
 			textEntry.Wrapping = fyne.TextWrapBreak
+			textEntry.Disable()
 			previewContent = container.NewScroll(textEntry)
 		}
 		fyne.Do(func() { previewWindow.SetContent(previewContent) })
