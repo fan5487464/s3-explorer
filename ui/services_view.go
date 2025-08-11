@@ -85,7 +85,7 @@ func NewServicesView(w fyne.Window) *ServicesView {
 		loadingIndicator:  widget.NewProgressBarInfinite(),
 	}
 	sv.loadingIndicator.Hide()
-	sv.loadConfig()
+	sv.loadConfig(nil)
 	return sv
 }
 
@@ -111,7 +111,7 @@ func (sv *ServicesView) UpdateServiceViewMode(alias string, viewMode string) {
 		if err != nil {
 			log.Printf("更新服务 '%s' 的视图模式失败: %v", alias, err)
 		} else {
-			sv.loadConfig()
+			sv.loadConfig(nil)
 		}
 	} else {
 		log.Printf("无法找到服务 '%s' 来更新视图模式。", alias)
@@ -150,8 +150,8 @@ func (sv *ServicesView) updateButtonsState() {
 	}
 }
 
-// loadConfig 加载 S3 服务配置
-func (sv *ServicesView) loadConfig() {
+// loadConfig 加载 S3 服务配置，并在完成后执行回调
+func (sv *ServicesView) loadConfig(onComplete func()) {
 	sv.loadingIndicator.Show()
 	go func() {
 		store, err := config.LoadConfig()
@@ -161,10 +161,13 @@ func (sv *ServicesView) loadConfig() {
 				log.Printf("加载配置失败: %v", err)
 				sv.configStore = &config.ConfigStore{Services: []config.S3ServiceConfig{}}
 				dialog.ShowError(fmt.Errorf("加载配置失败: %v", err), sv.window)
-				return
+			} else {
+				sv.configStore = store
 			}
-			sv.configStore = store
 			sv.refreshServiceList()
+			if onComplete != nil {
+				onComplete()
+			}
 		})
 	}()
 }
@@ -253,14 +256,19 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 					dialog.ShowError(fmt.Errorf("添加服务失败: %v", err), sv.window)
 					return
 				}
-				sv.loadConfig()
-				sv.refreshServiceList()
-				if sv.selectedServiceID != -1 && sv.OnServiceSelected != nil {
-					if len(sv.configStore.Services) == 1 {
-						sv.selectedServiceID = 0
+				sv.loadConfig(func() {
+					// 添加后，自动选择新添加的服务
+					newlySelectedID := -1
+					for i, svc := range sv.configStore.Services {
+						if svc.Alias == newService.Alias {
+							newlySelectedID = i
+							break
+						}
 					}
-					sv.OnServiceSelected(sv.configStore.Services[sv.selectedServiceID])
-				}
+					if newlySelectedID != -1 {
+						sv.handleServiceTapped(newlySelectedID)
+					}
+				})
 			}
 		}, sv.window)
 		d.Resize(fyne.NewSize(400, 250))
@@ -295,26 +303,22 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 					dialog.ShowError(fmt.Errorf("更新服务失败: %v", err), sv.window)
 					return
 				}
-				sv.loadConfig()
-				sv.refreshServiceList()
-
-				newlySelectedID := -1
-				for i, svc := range sv.configStore.Services {
-					if svc.Alias == newService.Alias {
-						newlySelectedID = i
-						break
+				sv.loadConfig(func() {
+					// 找到更新后的服务的新索引并重新选择它
+					newlySelectedID := -1
+					for i, svc := range sv.configStore.Services {
+						if svc.Alias == newService.Alias {
+							newlySelectedID = i
+							break
+						}
 					}
-				}
 
-				if newlySelectedID != -1 && sv.OnServiceSelected != nil {
-					sv.selectedServiceID = newlySelectedID
-					sv.OnServiceSelected(sv.configStore.Services[sv.selectedServiceID])
-				} else {
-					sv.selectedServiceID = -1
-					if sv.OnServiceSelected != nil {
-						sv.OnServiceSelected(config.S3ServiceConfig{})
+					if newlySelectedID != -1 {
+						sv.handleServiceTapped(newlySelectedID)
+					} else {
+						sv.handleServiceTapped(-1) // Clear selection if not found
 					}
-				}
+				})
 			}
 		}, sv.window)
 		d.Resize(fyne.NewSize(400, 250))
@@ -336,19 +340,14 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 					dialog.ShowError(fmt.Errorf("删除服务失败: %v", err), sv.window)
 					return
 				}
-				sv.loadConfig()
-				sv.refreshServiceList()
-				if len(sv.configStore.Services) > 0 {
-					sv.selectedServiceID = 0
-					if sv.OnServiceSelected != nil {
-						sv.OnServiceSelected(sv.configStore.Services[sv.selectedServiceID])
+				sv.loadConfig(func() {
+					// 删除后，清除选择或选择第一个
+					if len(sv.configStore.Services) > 0 {
+						sv.handleServiceTapped(0)
+					} else {
+						sv.handleServiceTapped(-1)
 					}
-				} else {
-					sv.selectedServiceID = -1
-					if sv.OnServiceSelected != nil {
-						sv.OnServiceSelected(config.S3ServiceConfig{})
-					}
-				}
+				})
 			}
 		}, sv.window)
 	})
