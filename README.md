@@ -30,7 +30,7 @@ S3 Explorer 是一个基于 Go 语言和 Fyne UI 框架开发的桌面应用程�
 
 1.  **克隆仓库**:
     ```bash
-    git clone https://github.com/your-repo/s3-explorer.git
+    git clone https://github.com/fan5487464/s3-explorer.git
     cd s3-explorer
     ```
 2.  **下载依赖**:
@@ -63,18 +63,6 @@ S3 Explorer 是一个基于 Go 语言和 Fyne UI 框架开发的桌面应用程�
     *   **删除**: 选中一个或多个文件/文件夹，点击“删除”按钮进行删除。
     *   **预览**: 双击图片或文本文件进行应用内预览。
 
-## 截图 (待补充)
+## 运行截图 
 
-![应用截图](docs/screenshot.png)
-*(请在此处放置您的应用截图)*
-
-## 贡献
-
-欢迎任何形式的贡献！如果您有任何问题、建议或想提交代码，请随时通过以下方式：
-
-1.  **提交 Issue**: 报告 Bug 或提出新功能建议。
-2.  **提交 Pull Request**: 贡献代码。请确保您的代码符合项目规范，并附带清晰的提交信息。
-
-## 许可证
-
-本项目采用 [LICENSE 文件中指定的许可证](LICENSE)。
+![应用截图](assets/docs/运行截图1.png)
