@@ -4,12 +4,11 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	"image/color"
 	_ "image/gif"
 	_ "image/jpeg"
 	"image/png"
 	_ "image/png"
-
-	"image/color"
 	"io"
 	"io/ioutil"
 	"log"
@@ -38,6 +37,11 @@ import (
 var (
 	thumbnailCache = make(map[string]fyne.Resource)
 	cacheLock      = sync.RWMutex{}
+)
+
+const (
+	listViewMode = "list"
+	gridViewMode = "grid"
 )
 
 // thumbnailResource 实现了 fyne.Resource 接口，用于将 image.Image 包装成资源
@@ -194,6 +198,90 @@ func (e *minWidthEntry) MinSize() fyne.Size {
 	return s
 }
 
+// --- Grid Entry Widget ---
+
+type gridEntry struct {
+	widget.BaseWidget
+	icon      *canvas.Image
+	nameLabel *widget.Label
+
+	id widget.ListItemID
+	ov *ObjectsView
+
+	doubleTapped func()
+	selected     bool
+}
+
+type gridEntryRenderer struct {
+	entry      *gridEntry
+	background *canvas.Rectangle
+	content    *fyne.Container
+}
+
+func (r *gridEntryRenderer) Destroy() {}
+
+func (r *gridEntryRenderer) Layout(size fyne.Size) {
+	r.background.Resize(size)
+	r.content.Resize(size)
+}
+
+func (r *gridEntryRenderer) MinSize() fyne.Size {
+	return r.content.MinSize()
+}
+
+func (r *gridEntryRenderer) Objects() []fyne.CanvasObject {
+	return []fyne.CanvasObject{r.background, r.content}
+}
+
+func (r *gridEntryRenderer) Refresh() {
+	if r.entry.selected {
+		r.background.FillColor = theme.SelectionColor()
+	} else {
+		r.background.FillColor = color.Transparent
+	}
+	r.background.Refresh()
+	canvas.Refresh(r.entry)
+}
+
+func (e *gridEntry) CreateRenderer() fyne.WidgetRenderer {
+	bg := canvas.NewRectangle(color.Transparent)
+	content := container.NewBorder(nil, e.nameLabel, nil, nil, e.icon)
+	return &gridEntryRenderer{
+		entry:      e,
+		background: bg,
+		content:    content,
+	}
+}
+
+func (e *gridEntry) DoubleTapped(_ *fyne.PointEvent) {
+	if e.doubleTapped != nil {
+		e.doubleTapped()
+	}
+}
+
+func (e *gridEntry) MouseDown(m *desktop.MouseEvent) {
+	e.ov.handleItemClick(e.id, m)
+}
+
+func (e *gridEntry) MouseUp(_ *desktop.MouseEvent) {}
+
+func newGridEntry(ov *ObjectsView) *gridEntry {
+	icon := canvas.NewImageFromResource(theme.FileIcon())
+	icon.SetMinSize(fyne.NewSize(64, 64))
+	icon.FillMode = canvas.ImageFillContain
+	nameLabel := widget.NewLabel("Filename")
+	nameLabel.Wrapping = fyne.TextWrapWord
+	nameLabel.Alignment = fyne.TextAlignCenter
+
+	entry := &gridEntry{
+		icon:      icon,
+		nameLabel: nameLabel,
+		ov:        ov,
+	}
+	entry.ExtendBaseWidget(entry)
+	return entry
+}
+
 // --- 主视图 ---
 
 // ObjectsView 结构体用于管理右侧的文件/文件夹列表视图
@@ -221,6 +309,11 @@ type ObjectsView struct {
 	nextButton     *widget.Button
 	pageInfoLabel  *widget.Label
 	pageSizeEntry  *minWidthEntry
+
+	// 视图切换
+	viewMode         string
+	viewSwitchButton *widget.Button
+	mainContent      *fyne.Container
 }
 
 // NewObjectsView 创建并返回一个新的 ObjectsView 实例
@@ -234,6 +327,7 @@ func NewObjectsView(w fyne.Window) *ObjectsView {
 		currentPage:       1,
 		pageSize:          1000,
 		pageMarkers:       []string{""},
+		viewMode:          listViewMode, // 默认是列表视图
 	}
 	ov.serviceInfoButton.Importance = widget.LowImportance
 	ov.serviceInfoButton.Disable()
@@ -275,7 +369,7 @@ func (ov *ObjectsView) resetPagingAndSelection() {
 func (ov *ObjectsView) loadObjects() {
 	if ov.s3Client == nil || ov.currentBucket == "" {
 		ov.objects = []s3client.S3Object{}
-		ov.refreshObjectList()
+		ov.refreshObjectView()
 		ov.updateButtonsState()
 		ov.updatePaginationControls()
 		return
@@ -301,7 +395,7 @@ func (ov *ObjectsView) loadObjects() {
 					ov.pageMarkers = append(ov.pageMarkers, *nextMarker)
 				}
 			}
-			ov.refreshObjectList()
+			ov.refreshObjectView()
 			ov.updateButtonsState()
 			ov.updatePaginationControls()
 			go ov.loadThumbnails()
@@ -353,16 +447,28 @@ func (ov *ObjectsView) generateThumbnail(index int, item s3client.S3Object) {
 	cacheLock.Unlock()
 
 	fyne.Do(func() {
-		ov.objectList.RefreshItem(index)
+		if ov.viewMode == listViewMode {
+			if ov.objectList != nil {
+				ov.objectList.RefreshItem(index)
+			}
+		} else {
+			if ov.mainContent != nil && len(ov.mainContent.Objects) > 0 {
+				if scroll, ok := ov.mainContent.Objects[0].(*container.Scroll); ok {
+					if grid, ok := scroll.Content.(*fyne.Container); ok {
+						if index < len(grid.Objects) {
+							if entry, ok := grid.Objects[index].(*gridEntry); ok {
+								cacheLock.RLock()
+								thumb, _ := thumbnailCache[item.Key]
+								cacheLock.RUnlock()
+								entry.icon.Resource = thumb
+								entry.Refresh()
+							}
+						}
+					}
+				}
+			}
+		}
 	})
-}
-
-// refreshObjectList 刷新文件/文件夹列表显示
-func (ov *ObjectsView) refreshObjectList() {
-	if ov.objectList == nil {
-		return
-	}
-	ov.objectList.Refresh()
 }
 
 // updateBreadcrumbs 更新面包屑导航
@@ -438,7 +544,7 @@ func (ov *ObjectsView) handleItemClick(id widget.ListItemID, m *desktop.MouseEve
 			}
 		}
 	}
-	ov.objectList.Refresh()
+	ov.refreshSelection()
 	ov.updateButtonsState()
 }
 
@@ -447,7 +553,7 @@ func (ov *ObjectsView) unselectAllObjects() {
 	if len(ov.selectedObjectIDs) > 0 {
 		ov.selectedObjectIDs = make(map[widget.ListItemID]struct{})
 		ov.lastSelectedID = -1
-		ov.objectList.Refresh()
+		ov.refreshSelection()
 		ov.updateButtonsState()
 	}
 }
@@ -606,8 +712,43 @@ func (ov *ObjectsView) openWithDefaultApp(item s3client.S3Object) {
 	}()
 }
 
-// GetContent 返回 ObjectsView 的 Fyne UI 内容
-func (ov *ObjectsView) GetContent() fyne.CanvasObject {
+// refreshObjectView is called when the data changes (loadObjects) or view mode switches.
+func (ov *ObjectsView) refreshObjectView() {
+	if ov.mainContent == nil {
+		return
+	}
+	ov.unselectAllObjects()
+	if ov.viewMode == gridViewMode {
+		ov.mainContent.Objects = []fyne.CanvasObject{ov.createGridView()}
+	} else {
+		ov.mainContent.Objects = []fyne.CanvasObject{ov.createListView()}
+	}
+	ov.mainContent.Refresh()
+}
+
+// refreshSelection is called when an item is selected/deselected.
+func (ov *ObjectsView) refreshSelection() {
+	if ov.viewMode == gridViewMode {
+		if ov.mainContent != nil && len(ov.mainContent.Objects) > 0 {
+			if scroll, ok := ov.mainContent.Objects[0].(*container.Scroll); ok {
+				if grid, ok := scroll.Content.(*fyne.Container); ok {
+					for id, obj := range grid.Objects {
+						if entry, ok := obj.(*gridEntry); ok {
+							_, entry.selected = ov.selectedObjectIDs[id]
+							entry.Refresh()
+						}
+					}
+				}
+			}
+		}
+	} else {
+		if ov.objectList != nil {
+			ov.objectList.Refresh()
+		}
+	}
+}
+
+func (ov *ObjectsView) createListView() fyne.CanvasObject {
 	ov.objectList = widget.NewList(
 		func() int {
 			return len(ov.objects)
@@ -650,10 +791,49 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 			entry.Refresh()
 		},
 	)
+	return newTappableContainer(ov.objectList, ov.unselectAllObjects)
+}
 
-	//listContainer := newTappableContainer(ov.objectList, ov.unselectAllObjects)
-	listContainer := newTappableContainer(ov.objectList, ov.unselectAllObjects)
+func (ov *ObjectsView) createGridView() fyne.CanvasObject {
+	var items []fyne.CanvasObject
+	for i := 0; i < len(ov.objects); i++ {
+		item := ov.objects[i]
+		entry := newGridEntry(ov)
+		entry.id = i
+		entry.nameLabel.SetText(item.Name)
+		_, entry.selected = ov.selectedObjectIDs[i]
 
+		if item.IsFolder {
+			entry.icon.Resource = theme.FolderIcon()
+			entry.doubleTapped = func() {
+				ov.SetBucketAndPrefix(ov.s3Client, ov.currentBucket, item.Key)
+			}
+		} else {
+			if isPreviewableImage(item.Name) {
+				cacheLock.RLock()
+				thumb, exists := thumbnailCache[item.Key]
+				cacheLock.RUnlock()
+				if exists {
+					entry.icon.Resource = thumb
+				} else {
+					entry.icon.Resource = theme.FileImageIcon()
+				}
+			} else {
+				entry.icon.Resource = getIconForFile(item.Name)
+			}
+			entry.doubleTapped = func() {
+				ov.showPreviewWindow(item)
+			}
+		}
+		items = append(items, entry)
+	}
+
+	grid := container.NewGridWrap(fyne.NewSize(120, 120), items...)
+	return container.NewScroll(grid)
+}
+
+// GetContent 返回 ObjectsView 的 Fyne UI 内容
+func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 	ov.breadcrumbContainer = container.NewHBox()
 	ov.updateBreadcrumbs()
 
@@ -837,7 +1017,18 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 	})
 	ov.updateButtonsState()
 
-	fileOpsButtons := container.NewHBox(createFolderButton, uploadButton, ov.downloadButton, ov.deleteButton)
+	ov.viewSwitchButton = widget.NewButtonWithIcon("", theme.GridIcon(), func() {
+		if ov.viewMode == listViewMode {
+			ov.viewMode = gridViewMode
+			ov.viewSwitchButton.SetIcon(theme.ListIcon())
+		} else {
+			ov.viewMode = listViewMode
+			ov.viewSwitchButton.SetIcon(theme.GridIcon())
+		}
+		ov.refreshObjectView()
+	})
+
+	fileOpsButtons := container.NewHBox(createFolderButton, uploadButton, ov.downloadButton, ov.deleteButton, ov.viewSwitchButton)
 
 	topBar := container.NewBorder(nil, nil, ov.breadcrumbContainer, fileOpsButtons, nil)
 
@@ -884,7 +1075,10 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 	statusBar := container.NewBorder(nil, nil, ov.serviceInfoButton, pagingControls, nil)
 
 	// --- 主内容区 ---
-	return container.NewBorder(topBar, statusBar, nil, nil, container.NewVBox(widget.NewSeparator()), listContainer)
+	ov.mainContent = container.NewMax()
+	ov.refreshObjectView() // Initial view
+
+	return container.NewBorder(topBar, statusBar, nil, nil, container.NewVBox(widget.NewSeparator()), ov.mainContent)
 }
 
 // startUploadFolderProcess 启动文件夹上传流程

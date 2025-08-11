@@ -6,7 +6,7 @@
   <component name="ChangeListManager">
     <list default="true" id="7572115f-c3a7-4634-92a7-8f05fd5b61ee" name="更改" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/ui/objects_view.go" beforeDir="false" afterPath="$PROJECT_DIR$/ui/objects_view.go" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -58,6 +58,11 @@
     "vue.rearranger.settings.migration": "true"
   }
 }]]></component>
+  <component name="RecentsManager">
+    <key name="MoveFile.RECENT_KEYS">
+      <recent name="D:\Codes\GoProject\s3-explorer\assets\docs" />
+    </key>
+  </component>
   <component name="RunManager">
     <configuration name="go build s3-explorer" type="GoApplicationRunConfiguration" factoryName="Go Application" temporary="true" nameIsGenerated="true">
       <module name="s3-explorer" />
