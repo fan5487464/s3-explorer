@@ -332,6 +332,11 @@ func NewObjectsView(w fyne.Window) *ObjectsView {
 	ov.serviceInfoButton.Importance = widget.LowImportance
 	ov.serviceInfoButton.Disable()
 	ov.loadingIndicator.Hide()
+
+	ov.window.SetOnDropped(func(_ fyne.Position, uris []fyne.URI) {
+		ov.handleDrop(uris)
+	})
+
 	return ov
 }
 
@@ -712,6 +717,74 @@ func (ov *ObjectsView) openWithDefaultApp(item s3client.S3Object) {
 	}()
 }
 
+// handleDrop handles dropped files and folders
+func (ov *ObjectsView) handleDrop(uris []fyne.URI) {
+	if ov.s3Client == nil || ov.currentBucket == "" {
+		dialog.ShowInformation("提示", "请先选择一个 S3 服务和存储桶才能上传。", ov.window)
+		return
+	}
+	if len(uris) == 0 {
+		return
+	}
+
+	log.Printf("接收到 %d 个拖放项目", len(uris))
+
+	for _, uri := range uris {
+		if uri.Scheme() != "file" {
+			log.Printf("跳过非文件拖放项目: %s", uri)
+			continue
+		}
+		path := uri.Path()
+		info, err := os.Stat(path)
+		if err != nil {
+			log.Printf("无法获取拖放项目信息 %s: %v", path, err)
+			dialog.ShowError(fmt.Errorf("无法读取项目 '%s': %v", filepath.Base(path), err), ov.window)
+			continue
+		}
+
+		if info.IsDir() {
+			go ov.startUploadFolderProcess(path)
+		} else {
+			go ov.uploadSingleFile(path)
+		}
+	}
+}
+
+// uploadSingleFile handles the upload of a single file from a local path
+func (ov *ObjectsView) uploadSingleFile(localPath string) {
+	fileName := filepath.Base(localPath)
+	s3Key := ov.currentPrefix + fileName
+
+	file, err := os.Open(localPath)
+	if err != nil {
+		fyne.Do(func() {
+			dialog.ShowError(fmt.Errorf("无法打开文件 '%s': %v", fileName, err), ov.window)
+		})
+		return
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		fyne.Do(func() {
+			dialog.ShowError(fmt.Errorf("无法读取文件信息 '%s': %v", fileName, err), ov.window)
+		})
+		return
+	}
+	fileSize := info.Size()
+
+	err = ov.s3Client.UploadObject(ov.currentBucket, s3Key, file, fileSize)
+
+	fyne.Do(func() {
+		if err != nil {
+			dialog.ShowError(fmt.Errorf("上传文件 '%s' 失败: %v", fileName, err), ov.window)
+		} else {
+			dialog.ShowInformation("成功", fmt.Sprintf("文件 '%s' 上传成功！", fileName), ov.window)
+			ov.loadObjects()
+		}
+	})
+}
+
 // refreshObjectView is called when the data changes (loadObjects) or view mode switches.
 func (ov *ObjectsView) refreshObjectView() {
 	if ov.mainContent == nil {
@@ -889,28 +962,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 					return
 				}
 				defer reader.Close()
-
-				filePath := reader.URI().Path()
-				fileName := filepath.Base(filePath)
-				s3Key := ov.currentPrefix + fileName
-
-				data, err := ioutil.ReadAll(reader)
-				if err != nil {
-					dialog.ShowError(fmt.Errorf("读取文件失败: %v", err), ov.window)
-					return
-				}
-
-				go func() {
-					err := ov.s3Client.UploadObject(ov.currentBucket, s3Key, strings.NewReader(string(data)), int64(len(data)))
-					fyne.Do(func() {
-						if err != nil {
-							dialog.ShowError(fmt.Errorf("上传失败: %v", err), ov.window)
-						} else {
-							dialog.ShowInformation("成功", fmt.Sprintf("文件 %s 上传成功！", fileName), ov.window)
-							ov.loadObjects()
-						}
-					})
-				}()
+				go ov.uploadSingleFile(reader.URI().Path())
 			}, ov.window)
 			fd.Show()
 		}
@@ -950,7 +1002,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 
 		dialog.ShowFolderOpen(func(uri fyne.ListableURI, err error) {
 			if err != nil {
-				dialog.ShowError(err, ov.window)
+					dialog.ShowError(err, ov.window)
 				return
 			}
 			if uri == nil {
