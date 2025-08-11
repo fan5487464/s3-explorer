@@ -71,6 +71,8 @@ type ServicesView struct {
 	serviceList       *widget.List                // 用于显示 S3 服务列表的 Fyne 列表组件
 	selectedServiceID widget.ListItemID           // 存储当前选中的服务 ID
 	loadingIndicator  *widget.ProgressBarInfinite // 加载指示器
+	editButton        *widget.Button
+	deleteButton      *widget.Button
 
 	OnServiceSelected func(svc config.S3ServiceConfig)
 }
@@ -126,6 +128,21 @@ func (sv *ServicesView) handleServiceTapped(id widget.ListItemID) {
 		}
 	}
 	sv.serviceList.Refresh() // 刷新列表以更新视觉效果
+	sv.updateButtonsState()
+}
+
+// updateButtonsState 根据选择状态更新按钮可用性
+func (sv *ServicesView) updateButtonsState() {
+	if sv.editButton == nil || sv.deleteButton == nil {
+		return
+	}
+	if sv.selectedServiceID == -1 {
+		sv.editButton.Disable()
+		sv.deleteButton.Disable()
+	} else {
+		sv.editButton.Enable()
+		sv.deleteButton.Enable()
+	}
 }
 
 // loadConfig 加载 S3 服务配置
@@ -239,7 +256,7 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 	})
 
 	// 编辑服务按钮
-	editButton := widget.NewButtonWithIcon("", theme.DocumentCreateIcon(), func() {
+	sv.editButton = widget.NewButtonWithIcon("", theme.DocumentCreateIcon(), func() {
 		if sv.selectedServiceID == -1 || sv.selectedServiceID >= len(sv.configStore.Services) {
 			dialog.ShowInformation("提示", "请先选择一个要编辑的服务。", sv.window)
 			return
@@ -269,7 +286,7 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 	})
 
 	// 删除服务按钮
-	deleteButton := widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {
+	sv.deleteButton = widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {
 		if sv.selectedServiceID == -1 || sv.selectedServiceID >= len(sv.configStore.Services) {
 			dialog.ShowInformation("提示", "请先选择一个要删除的服务。", sv.window)
 			return
@@ -289,12 +306,14 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 		}, sv.window)
 	})
 
+	sv.updateButtonsState() // 设置按钮初始状态
+
 	buttonBox := container.NewHBox(
 		addButton,
 		layout.NewSpacer(),
-		editButton,
+		sv.editButton,
 		layout.NewSpacer(),
-		deleteButton,
+		sv.deleteButton,
 		layout.NewSpacer(),
 		sv.loadingIndicator,
 	)

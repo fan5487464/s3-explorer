@@ -24,10 +24,6 @@ type customTheme struct{}
 // Color 返回主题特定颜色
 // 实现了 fyne.Theme 接口的 Color 方法
 func (t *customTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
-	// 为了让禁用的文本可读，我们覆盖禁用颜色
-	if name == theme.ColorNameDisabled {
-		return theme.DefaultTheme().Color(theme.ColorNameForeground, variant)
-	}
 	return theme.DefaultTheme().Color(name, variant)
 }
 
@@ -69,6 +65,7 @@ func showHelpDialog(w fyne.Window) {
 2. 浏览和操作:
    - 左侧列表选择一个服务。
    - 中间列表会显示存储桶，点击进入。
+   - 存储桶不为空时才可以删除，选中的存储桶不为空时删除按钮无法点击。
    - 右侧列表显示文件和文件夹。
    - 使用顶部的按钮进行创建文件夹、上传、下载、删除等操作。
    - 双击文件可进行预览。
@@ -183,7 +180,7 @@ func main() {
 		bucketsView.GetContent(),
 		objectsView.GetContent(),
 	)
-	// 内层分割比例：中间占 1.0 / (1.0 + 8) = 1.0 / 9.0
+	// 内层分割比例：中间占 1.0 / (1.0 + 8.0) = 1.0 / 9.0
 	innerSplit.Offset = 1.0 / 9.0
 
 	// 外层分割：服务(左) | 内层
@@ -191,7 +188,7 @@ func main() {
 		servicesView.GetContent(),
 		innerSplit,
 	)
-	// 外层分割比例：左侧占 1.5 / 10.0 = 0.15
+	// 外层分割比例：左侧占 1.0 ➗ 10.0 = 0.1
 	content.Offset = 0.1
 
 	// 设置窗口内容和大小

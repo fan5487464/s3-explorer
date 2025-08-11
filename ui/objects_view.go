@@ -672,30 +672,39 @@ func (ov *ObjectsView) showInAppPreview(item s3client.S3Object, previewType stri
 			}
 		} else {
 			ext := strings.ToLower(filepath.Ext(item.Name))
+			originalText := string(data)
 
 			if ext == ".md" {
-				// Left side: Raw text
+				// 左侧：原始 Markdown 文本
 				rawText := widget.NewMultiLineEntry()
-				rawText.SetText(string(data))
+				rawText.SetText(originalText)
 				rawText.Wrapping = fyne.TextWrapBreak
-				rawText.Disable()
+				rawText.OnChanged = func(s string) { // 实现只读
+					if s != originalText {
+						rawText.SetText(originalText)
+					}
+				}
 
-				// Right side: Rendered Markdown
-				renderedText := widget.NewRichTextFromMarkdown(string(data))
+				// 右侧：渲染后的 Markdown
+				renderedText := widget.NewRichTextFromMarkdown(originalText)
 				renderedText.Wrapping = fyne.TextWrapBreak
 
-				// Create a split view
 				split := container.NewHSplit(
 					container.NewScroll(rawText),
 					container.NewScroll(renderedText),
 				)
-				split.Offset = 0.5 // Start with a 50/50 split
+				split.Offset = 0.5
 				previewContent = split
 			} else {
+				// 其他文本文件：使用只读的 MultiLineEntry
 				textEntry := widget.NewMultiLineEntry()
-				textEntry.SetText(string(data))
+				textEntry.SetText(originalText)
 				textEntry.Wrapping = fyne.TextWrapBreak
-				textEntry.Disable()
+				textEntry.OnChanged = func(s string) {
+					if s != originalText {
+						textEntry.SetText(originalText)
+					}
+				}
 				previewContent = container.NewScroll(textEntry)
 			}
 		}
