@@ -42,7 +42,8 @@ func InitDB() error {
 	}
 	dbPath := filepath.Join(appConfigDir, "s3-explorer.db")
 
-	db, err = sql.Open("sqlite3", dbPath)
+	// Add _busy_timeout to the connection string to prevent "database is locked" errors
+	db, err = sql.Open("sqlite3", dbPath+"?_busy_timeout=5000")
 	if err != nil {
 		return fmt.Errorf("打开数据库失败: %w", err)
 	}
@@ -84,6 +85,11 @@ func InitDB() error {
 			proxyColumnExists = true
 			break
 		}
+	}
+	// Explicitly close rows after iteration
+	rows.Close()
+	if err := rows.Err(); err != nil { // Check for errors during iteration
+		return fmt.Errorf("遍历表结构行失败: %w", err)
 	}
 
 	if !proxyColumnExists {
