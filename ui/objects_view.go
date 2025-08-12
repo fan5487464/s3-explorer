@@ -1085,38 +1085,117 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 		dialog.ShowConfirm("确认删除", fmt.Sprintf("确定要删除选中的 %d 个项目吗？", selectedCount), func(confirmed bool) {
 			if confirmed {
 				go func() {
-					var wg sync.WaitGroup
-					var mu sync.Mutex
+					// --- Preliminary Scan for Total Items ---
+					scanProgressDialog := dialog.NewProgressInfinite("正在准备删除", "正在扫描待删除项目...", ov.window)
+					scanProgressDialog.Show()
+
+					var totalItemsToDelete int32 = 0
+					var scanErrors []error
+					var scanWg sync.WaitGroup
+					var scanMu sync.Mutex
+
+					itemsToProcess := make(chan s3client.S3Object, selectedCount)
+
+					// Populate channel with selected items
+					for id := range ov.selectedObjectIDs {
+						if id < len(ov.objects) {
+							itemsToProcess <- ov.objects[id]
+						}
+					}
+					close(itemsToProcess)
+
+					// Workers for scanning
+					numScanWorkers := 5 // Adjust as needed
+					for i := 0; i < numScanWorkers; i++ {
+						scanWg.Add(1)
+						go func() {
+							defer scanWg.Done()
+							for item := range itemsToProcess {
+								if item.IsFolder {
+									keys, err := ov.s3Client.ListAllKeysUnderPrefix(ov.currentBucket, item.Key)
+									scanMu.Lock()
+									if err != nil {
+										scanErrors = append(scanErrors, fmt.Errorf("扫描文件夹 '%s' 失败: %w", item.Name, err))
+									} else {
+										totalItemsToDelete += int32(len(keys)) // Add all keys within the folder
+									}
+									scanMu.Unlock()
+								} else {
+									scanMu.Lock()
+									totalItemsToDelete++ // Just the file itself
+									scanMu.Unlock()
+								}
+							}
+						}()
+					}
+					scanWg.Wait()
+					scanProgressDialog.Hide()
+
+					if len(scanErrors) > 0 {
+						fyne.Do(func() {
+							dialog.ShowError(fmt.Errorf("扫描部分项目失败: %v", scanErrors[0]), ov.window) // Show first error
+						})
+						return
+					}
+
+					if totalItemsToDelete == 0 {
+						fyne.Do(func() {
+							dialog.ShowInformation("提示", "没有可删除的项目。", ov.window)
+						})
+						return
+					}
+
+					// --- Actual Deletion with Progress Bar ---
+					deleteProgressDialog := dialog.NewProgress("正在删除", "正在删除项目...", ov.window)
+					deleteProgressDialog.Show()
+
+					var currentDeletedItems int32 = 0
+					var deletionWg sync.WaitGroup
+					var deletionMu sync.Mutex
 					var failedDeletions []string
 
+					// Channel for items to delete (could be files or folders)
+					itemsToDeleteChannel := make(chan s3client.S3Object, selectedCount)
 					for id := range ov.selectedObjectIDs {
-						if id >= len(ov.objects) {
-							continue
+						if id < len(ov.objects) {
+							itemsToDeleteChannel <- ov.objects[id]
 						}
-						wg.Add(1)
-						go func(selectedObject s3client.S3Object) {
-							defer wg.Done()
-
-							var err error
-							if selectedObject.IsFolder {
-								s3Prefix := selectedObject.Key
-								if !strings.HasSuffix(s3Prefix, "/") {
-									s3Prefix += "/"
-								}
-								err = ov.deleteFolderAndContents(ov.currentBucket, s3Prefix)
-							} else {
-								err = ov.s3Client.DeleteObject(ov.currentBucket, selectedObject.Key)
-							}
-
-							if err != nil {
-								mu.Lock()
-								failedDeletions = append(failedDeletions, selectedObject.Name)
-								mu.Unlock()
-								log.Printf("删除项目 '%s' 失败: %v", selectedObject.Name, err)
-							}
-						}(ov.objects[id])
 					}
-					wg.Wait()
+					close(itemsToDeleteChannel)
+
+					numDeleteWorkers := 10 // Adjust as needed
+					for i := 0; i < numDeleteWorkers; i++ {
+						deletionWg.Add(1)
+						go func() {
+							defer deletionWg.Done()
+							for selectedObject := range itemsToDeleteChannel {
+								var err error
+								if selectedObject.IsFolder {
+									s3Prefix := selectedObject.Key
+									if !strings.HasSuffix(s3Prefix, "/") {
+										s3Prefix += "/"
+									}
+									// Call the new function that updates progress
+									err = ov.deleteFolderAndContentsWithProgress(ov.currentBucket, s3Prefix, &currentDeletedItems, &deletionMu, deleteProgressDialog, totalItemsToDelete)
+								} else {
+									err = ov.s3Client.DeleteObject(ov.currentBucket, selectedObject.Key)
+									deletionMu.Lock()
+									currentDeletedItems++
+									fyne.Do(func() { deleteProgressDialog.SetValue(float64(currentDeletedItems) / float64(totalItemsToDelete)) })
+									deletionMu.Unlock()
+								}
+
+								if err != nil {
+									deletionMu.Lock()
+									failedDeletions = append(failedDeletions, selectedObject.Name)
+									deletionMu.Unlock()
+									log.Printf("删除项目 '%s' 失败: %v", selectedObject.Name, err)
+								}
+							}
+						}()
+					}
+					deletionWg.Wait()
+					deleteProgressDialog.Hide()
 
 					fyne.Do(func() {
 						if len(failedDeletions) > 0 {
@@ -1511,6 +1590,59 @@ func (ov *ObjectsView) deleteFolderAndContents(bucket, prefix string) error {
 					}
 					mu.Unlock()
 					log.Printf("删除对象 %s 失败: %v", key, err)
+				}
+			}
+		}()
+	}
+
+	for _, key := range keysToDelete {
+		deleteChannel <- key
+	}
+	close(deleteChannel)
+
+	wg.Wait()
+
+	if len(deletionErrors) > 0 {
+		return fmt.Errorf("删除文件夹 '%s' 时发生错误，部分对象删除失败", prefix)
+	}
+
+	return nil
+}
+
+// deleteFolderAndContentsWithProgress 递归删除文件夹及其所有内容，并更新进度
+func (ov *ObjectsView) deleteFolderAndContentsWithProgress(bucket, prefix string, currentDeletedItems *int32, mu *sync.Mutex, progressDialog *dialog.ProgressDialog, totalItemsToDelete int32) error {
+	keys, err := ov.s3Client.ListAllKeysUnderPrefix(bucket, prefix)
+	if err != nil {
+		return fmt.Errorf("列出文件夹 '%s' 内容失败: %w", prefix, err)
+	}
+
+	// Add the folder object itself to the list of keys to delete
+	keysToDelete := append(keys, prefix)
+
+	var wg sync.WaitGroup
+	var deletionErrors []error
+
+	deleteChannel := make(chan string, len(keysToDelete))
+	numWorkers := 10
+
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for key := range deleteChannel {
+				err := ov.s3Client.DeleteObject(bucket, key)
+				if err != nil {
+					mu.Lock()
+					if len(deletionErrors) == 0 { // Only store the first error
+						deletionErrors = append(deletionErrors, err)
+					}
+					mu.Unlock()
+					log.Printf("删除对象 %s 失败: %v", key, err)
+				} else {
+					mu.Lock()
+					*currentDeletedItems++
+					fyne.Do(func() { progressDialog.SetValue(float64(*currentDeletedItems) / float64(totalItemsToDelete)) })
+					mu.Unlock()
 				}
 			}
 		}()
