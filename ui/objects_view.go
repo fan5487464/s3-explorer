@@ -76,6 +76,7 @@ type ObjectsView struct {
 	currentBucket       string
 	currentPrefix       string
 	objects             []s3client.S3Object
+	filteredObjects     []s3client.S3Object // 用于存储过滤后的对象
 	objectList          *widget.List
 	breadcrumbContainer *fyne.Container
 	selectedObjectIDs   map[widget.ListItemID]struct{}
@@ -84,6 +85,7 @@ type ObjectsView struct {
 	downloadButton      *widget.Button
 	deleteButton        *widget.Button
 	serviceInfoButton   *widget.Button
+	searchEntry         *widget.Entry // 搜索框
 
 	// 分页相关状态
 	currentPage    int
@@ -537,6 +539,11 @@ func (ov *ObjectsView) handleItemClick(id widget.ListItemID, m *desktop.MouseEve
 		return
 	}
 
+	// 确保ID在有效范围内
+	if id >= len(ov.getDisplayedObjects()) {
+		return
+	}
+
 	ctrl := m.Modifier&desktop.ControlModifier != 0 || m.Modifier&desktop.SuperModifier != 0
 	shift := m.Modifier&desktop.ShiftModifier != 0
 
@@ -566,7 +573,10 @@ func (ov *ObjectsView) handleItemClick(id widget.ListItemID, m *desktop.MouseEve
 				start, end = end, start
 			}
 			for i := start; i <= end; i++ {
-				ov.selectedObjectIDs[i] = struct{}{}
+				// 确保索引在有效范围内
+				if i < len(ov.getDisplayedObjects()) {
+					ov.selectedObjectIDs[i] = struct{}{}
+				}
 			}
 		}
 	}
@@ -576,8 +586,9 @@ func (ov *ObjectsView) handleItemClick(id widget.ListItemID, m *desktop.MouseEve
 	// 根据选择更新窗口标题
 	if len(ov.selectedObjectIDs) == 1 {
 		for selectedID := range ov.selectedObjectIDs { // 获取单个选定的ID
-			if selectedID < len(ov.objects) {
-				ov.window.SetTitle(fmt.Sprintf("S3 资源管理器 ---> %s", ov.objects[selectedID].Name))
+			items := ov.getDisplayedObjects()
+			if selectedID < len(items) {
+				ov.window.SetTitle(fmt.Sprintf("S3 资源管理器 ---> %s", items[selectedID].Name))
 			}
 		}
 	} else {
@@ -876,13 +887,18 @@ func (ov *ObjectsView) refreshSelection() {
 func (ov *ObjectsView) createListView() fyne.CanvasObject {
 	ov.objectList = widget.NewList(
 		func() int {
-			return len(ov.objects)
+			return len(ov.getDisplayedObjects())
 		},
 		func() fyne.CanvasObject {
 			return newListEntry(ov)
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
-			item := ov.objects[id]
+			items := ov.getDisplayedObjects()
+			if id >= len(items) {
+				return
+			}
+			
+			item := items[id]
 			entry := obj.(*listEntry)
 			entry.id = id
 			entry.nameLabel.SetText(item.Name)
@@ -921,8 +937,10 @@ func (ov *ObjectsView) createListView() fyne.CanvasObject {
 
 func (ov *ObjectsView) createGridView() fyne.CanvasObject {
 	var items []fyne.CanvasObject
-	for i := 0; i < len(ov.objects); i++ {
-		item := ov.objects[i]
+	displayedObjects := ov.getDisplayedObjects()
+	
+	for i := 0; i < len(displayedObjects); i++ {
+		item := displayedObjects[i]
 		entry := newGridEntry(ov)
 		entry.id = i
 		entry.nameLabel.SetText(formatFileNameForDisplay(item.Name, 20)) // 设置单行显示的文件名格式，包括截断和扩展名
@@ -961,6 +979,13 @@ func (ov *ObjectsView) createGridView() fyne.CanvasObject {
 func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 	ov.breadcrumbContainer = container.NewHBox()
 	ov.updateBreadcrumbs()
+
+	// 创建搜索框
+	ov.searchEntry = widget.NewEntry()
+	ov.searchEntry.SetPlaceHolder("搜索文件...")
+	ov.searchEntry.OnChanged = func(s string) {
+		ov.filterObjects(s)
+	}
 
 	createFolderButton := widget.NewButtonWithIcon("", theme.FolderNewIcon(), func() {
 		if ov.s3Client == nil || ov.currentBucket == "" {
@@ -1086,8 +1111,9 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 
 					// 使用选中的项目填充通道
 					for id := range ov.selectedObjectIDs {
-						if id < len(ov.objects) {
-							itemsToProcess <- ov.objects[id]
+						items := ov.getDisplayedObjects()
+						if id < len(items) {
+							itemsToProcess <- items[id]
 						}
 					}
 					close(itemsToProcess)
@@ -1147,8 +1173,9 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 					// 用于删除项目的通道（可以是文件或文件夹）
 					itemsToDeleteChannel := make(chan s3client.S3Object, selectedCount)
 					for id := range ov.selectedObjectIDs {
-						if id < len(ov.objects) {
-							itemsToDeleteChannel <- ov.objects[id]
+						items := ov.getDisplayedObjects()
+						if id < len(items) {
+							itemsToDeleteChannel <- items[id]
 						}
 					}
 					close(itemsToDeleteChannel)
@@ -1223,7 +1250,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 
 	fileOpsButtons := container.NewHBox(createFolderButton, uploadButton, ov.downloadButton, ov.deleteButton, ov.viewSwitchButton)
 
-	topBar := container.NewBorder(nil, nil, ov.breadcrumbContainer, fileOpsButtons, nil)
+	topBar := container.NewBorder(nil, nil, ov.breadcrumbContainer, fileOpsButtons, ov.searchEntry)
 
 	// --- 分页控件 ---
 	ov.prevButton = widget.NewButtonWithIcon("", theme.NavigateBackIcon(), func() {
@@ -1487,8 +1514,9 @@ func (ov *ObjectsView) startDownloadProcess(localBasePath string) {
 	// 步骤 1: 扫描所有选中的项目以确定总大小和要下载的文件
 	objectsToScan := make(chan s3client.S3Object, len(ov.selectedObjectIDs))
 	for id := range ov.selectedObjectIDs {
-		if id < len(ov.objects) {
-			objectsToScan <- ov.objects[id]
+		items := ov.getDisplayedObjects()
+		if id < len(items) {
+			objectsToScan <- items[id]
 		}
 	}
 	close(objectsToScan)
@@ -1816,4 +1844,39 @@ func formatFileNameForDisplay(fileName string, maxDisplayLength int) string {
 // formatBytes 格式化字节大小为可读的字符串
 func formatBytes(b int64) string {
 	return common.FormatBytes(b)
+}
+
+// filterObjects 根据搜索词过滤对象列表
+func (ov *ObjectsView) filterObjects(searchTerm string) {
+	if searchTerm == "" {
+		// 如果搜索词为空，显示所有对象
+		ov.filteredObjects = nil
+	} else {
+		// 过滤对象列表
+		ov.filteredObjects = make([]s3client.S3Object, 0)
+		searchTerm = strings.ToLower(searchTerm)
+		
+		for _, obj := range ov.objects {
+			// 将对象名称转换为小写进行不区分大小写的搜索
+			if strings.Contains(strings.ToLower(obj.Name), searchTerm) {
+				ov.filteredObjects = append(ov.filteredObjects, obj)
+			}
+		}
+	}
+	
+	// 重置选择状态
+	ov.selectedObjectIDs = make(map[widget.ListItemID]struct{})
+	ov.lastSelectedID = -1
+	ov.updateButtonsState()
+	
+	// 刷新视图
+	ov.refreshObjectView()
+}
+
+// getDisplayedObjects 返回当前应该显示的对象列表（过滤后或全部）
+func (ov *ObjectsView) getDisplayedObjects() []s3client.S3Object {
+	if ov.filteredObjects != nil {
+		return ov.filteredObjects
+	}
+	return ov.objects
 }
