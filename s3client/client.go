@@ -64,6 +64,9 @@ func NewS3Client(svcConfig appConfig.S3ServiceConfig) (*S3Client, error) {
 	// 创建 S3 客户端，并启用路径风格访问
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.UsePathStyle = true // 修正：启用路径风格访问，对于 Minio 等 S3 兼容服务很重要
+		// 显式设置校验和计算和验证策略为 Unset，以避免与 HTTP 和非 seekable streams 相关的问题
+		o.RequestChecksumCalculation = aws.RequestChecksumCalculationUnset
+		o.ResponseChecksumValidation = aws.ResponseChecksumValidationUnset
 	})
 	return &S3Client{client: client},
 		nil
@@ -154,6 +157,7 @@ func (sc *S3Client) UploadObject(bucketName, key string, reader io.Reader, size 
 		Key:           aws.String(key),
 		Body:          reader,
 		ContentLength: &size,
+		// 移除了 ChecksumAlgorithm 字段，让 SDK 使用默认行为
 	})
 	if err != nil {
 		return fmt.Errorf("上传文件失败: %w", err)
@@ -271,7 +275,7 @@ func (sc *S3Client) ListAllObjectsUnderPrefix(bucketName, prefix string) ([]S3Ob
 	return objects, nil
 }
 
-// ListAllKeysUnderPrefix recursively lists all object keys (files and folder markers) under a given prefix.
+// ListAllKeysUnderPrefix 递归地列出指定前缀下的所有对象键（文件和文件夹标记）。
 func (sc *S3Client) ListAllKeysUnderPrefix(bucketName, prefix string) ([]string, error) {
 	var keys []string
 	paginator := s3.NewListObjectsV2Paginator(sc.client, &s3.ListObjectsV2Input{

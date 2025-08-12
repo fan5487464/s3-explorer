@@ -42,7 +42,7 @@ func InitDB() error {
 	}
 	dbPath := filepath.Join(appConfigDir, "s3-explorer.db")
 
-	// Add _busy_timeout to the connection string to prevent "database is locked" errors
+	// 在连接字符串中添加_busy_timeout以防止“数据库已锁定”错误
 	db, err = sql.Open("sqlite3", dbPath+"?_busy_timeout=5000")
 	if err != nil {
 		return fmt.Errorf("打开数据库失败: %w", err)
@@ -86,7 +86,7 @@ func InitDB() error {
 			break
 		}
 	}
-	// Explicitly close rows after iteration
+	// 迭代后显式关闭行
 	rows.Close()
 	if err := rows.Err(); err != nil { // Check for errors during iteration
 		return fmt.Errorf("遍历表结构行失败: %w", err)

@@ -3,6 +3,15 @@ package ui
 import (
 	"bytes"
 	"fmt"
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/driver/desktop"
+	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
+	"fyne.io/fyne/v2/widget"
+	"github.com/nfnt/resize"
 	"image"
 	"image/color"
 	_ "image/gif"
@@ -19,16 +28,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-
-	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/canvas"
-	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/driver/desktop"
-	"fyne.io/fyne/v2/layout"
-	"fyne.io/fyne/v2/theme"
-	"fyne.io/fyne/v2/widget"
-	"github.com/nfnt/resize"
 
 	"s3-explorer/s3client"
 )
@@ -793,60 +792,48 @@ func (ov *ObjectsView) handleDrop(uris []fyne.URI) {
 
 	log.Printf("接收到 %d 个拖放项目", len(uris))
 
+	// 将所有项目收集起来，统一处理
+	var pathsToUpload []string
 	for _, uri := range uris {
 		if uri.Scheme() != "file" {
 			log.Printf("跳过非文件拖放项目: %s", uri)
 			continue
 		}
-		path := uri.Path()
-		info, err := os.Stat(path)
-		if err != nil {
-			log.Printf("无法获取拖放项目信息 %s: %v", path, err)
-			dialog.ShowError(fmt.Errorf("无法读取项目 '%s': %v", filepath.Base(path), err), ov.window)
-			continue
-		}
+		pathsToUpload = append(pathsToUpload, uri.Path())
+	}
 
-		if info.IsDir() {
-			go ov.startUploadFolderProcess(path)
-		} else {
-			go ov.uploadSingleFile(path)
-		}
+	if len(pathsToUpload) > 0 {
+		go ov.startUploadProcess(pathsToUpload)
 	}
 }
 
-// uploadSingleFile 处理从本地路径上传单个文件
-func (ov *ObjectsView) uploadSingleFile(localPath string) {
-	fileName := filepath.Base(localPath)
-	s3Key := ov.currentPrefix + fileName
-
-	file, err := os.Open(localPath)
+// uploadSingleFile 处理单个文件的实际上传逻辑。
+// 它将文件内容读入内存，然后上传到 S3。
+// 这种方法使用 bytes.NewReader (io.ReadSeeker) 来避免在使用 HTTP 和校验和时出现 "unseekable stream" 错误。
+func (ov *ObjectsView) uploadSingleFile(localPath, s3Key string, fileSize int64, totalOverallSize int64, bytesUploaded *int64, progressDialog *dialog.ProgressDialog) error {
+	// 1. 将整个文件内容读入内存
+	// 注意：对于大文件，这可能会消耗大量内存。
+	data, err := ioutil.ReadFile(localPath) // ioutil.ReadFile 返回 []byte
 	if err != nil {
-		fyne.Do(func() {
-			dialog.ShowError(fmt.Errorf("无法打开文件 '%s': %v", fileName, err), ov.window)
-		})
-		return
+		return fmt.Errorf("无法读取文件 '%s' 到内存: %w", filepath.Base(localPath), err)
 	}
-	defer file.Close()
 
-	info, err := file.Stat()
+	// 2. 从字节切片创建一个 io.ReadSeeker
+	reader := bytes.NewReader(data)
+	actualFileSize := int64(len(data)) // 从数据重新计算文件大小
+
+	// 3. 使用进度跟踪器包装 reader
+	// bytes.NewReader 是一个 io.ReadSeeker，而我们的 ProgressTracker 包装了一个 io.Reader。
+	// SDK 现在应该能够在需要时处理校验和。
+	readerWithProgress := NewProgressTracker(reader, totalOverallSize, bytesUploaded, progressDialog)
+
+	// 4. 将 io.ReadSeeker (readerWithProgress) 传递给 S3 客户端。
+	err = ov.s3Client.UploadObject(ov.currentBucket, s3Key, readerWithProgress, actualFileSize)
 	if err != nil {
-		fyne.Do(func() {
-			dialog.ShowError(fmt.Errorf("无法读取文件信息 '%s': %v", fileName, err), ov.window)
-		})
-		return
+		return fmt.Errorf("上传文件 '%s' 失败: %w", filepath.Base(localPath), err)
 	}
-	fileSize := info.Size()
 
-	err = ov.s3Client.UploadObject(ov.currentBucket, s3Key, file, fileSize)
-
-	fyne.Do(func() {
-		if err != nil {
-			dialog.ShowError(fmt.Errorf("上传文件 '%s' 失败: %v", fileName, err), ov.window)
-		} else {
-			dialog.ShowInformation("成功", fmt.Sprintf("文件 '%s' 上传成功！", fileName), ov.window)
-			ov.loadObjects()
-		}
-	})
+	return nil
 }
 
 // refreshObjectView 在数据更改（加载对象）或视图模式切换时调用。
@@ -1026,7 +1013,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 					return
 				}
 				defer reader.Close()
-				go ov.uploadSingleFile(reader.URI().Path())
+				go ov.startUploadProcess([]string{reader.URI().Path()})
 			}, ov.window)
 			fd.Show()
 		}
@@ -1041,7 +1028,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 				if uri == nil {
 					return
 				}
-				go ov.startUploadFolderProcess(uri.Path())
+				go ov.startUploadProcess([]string{uri.Path()})
 			}, ov.window)
 		}
 
@@ -1085,7 +1072,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 		dialog.ShowConfirm("确认删除", fmt.Sprintf("确定要删除选中的 %d 个项目吗？", selectedCount), func(confirmed bool) {
 			if confirmed {
 				go func() {
-					// --- Preliminary Scan for Total Items ---
+					// --- 为删除操作进行初步扫描以获取项目总数 ---
 					scanProgressDialog := dialog.NewProgressInfinite("正在准备删除", "正在扫描待删除项目...", ov.window)
 					scanProgressDialog.Show()
 
@@ -1096,7 +1083,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 
 					itemsToProcess := make(chan s3client.S3Object, selectedCount)
 
-					// Populate channel with selected items
+					// 使用选中的项目填充通道
 					for id := range ov.selectedObjectIDs {
 						if id < len(ov.objects) {
 							itemsToProcess <- ov.objects[id]
@@ -1104,8 +1091,8 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 					}
 					close(itemsToProcess)
 
-					// Workers for scanning
-					numScanWorkers := 5 // Adjust as needed
+					// 用于扫描的工作者 goroutines
+					numScanWorkers := 5 // 可根据需要调整
 					for i := 0; i < numScanWorkers; i++ {
 						scanWg.Add(1)
 						go func() {
@@ -1117,23 +1104,25 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 									if err != nil {
 										scanErrors = append(scanErrors, fmt.Errorf("扫描文件夹 '%s' 失败: %w", item.Name, err))
 									} else {
-										totalItemsToDelete += int32(len(keys)) // Add all keys within the folder
+										totalItemsToDelete += int32(len(keys)) // 添加文件夹内的所有键
 									}
 									scanMu.Unlock()
 								} else {
 									scanMu.Lock()
-									totalItemsToDelete++ // Just the file itself
+									totalItemsToDelete++ // 文件本身
 									scanMu.Unlock()
 								}
 							}
 						}()
 					}
 					scanWg.Wait()
-					scanProgressDialog.Hide()
+					fyne.Do(func() {
+						scanProgressDialog.Hide()
+					})
 
 					if len(scanErrors) > 0 {
 						fyne.Do(func() {
-							dialog.ShowError(fmt.Errorf("扫描部分项目失败: %v", scanErrors[0]), ov.window) // Show first error
+							dialog.ShowError(fmt.Errorf("扫描部分项目失败: %v", scanErrors[0]), ov.window) // 显示第一个错误
 						})
 						return
 					}
@@ -1145,7 +1134,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 						return
 					}
 
-					// --- Actual Deletion with Progress Bar ---
+					// --- 执行实际删除操作并显示进度条 ---
 					deleteProgressDialog := dialog.NewProgress("正在删除", "正在删除项目...", ov.window)
 					deleteProgressDialog.Show()
 
@@ -1154,7 +1143,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 					var deletionMu sync.Mutex
 					var failedDeletions []string
 
-					// Channel for items to delete (could be files or folders)
+					// 用于删除项目的通道（可以是文件或文件夹）
 					itemsToDeleteChannel := make(chan s3client.S3Object, selectedCount)
 					for id := range ov.selectedObjectIDs {
 						if id < len(ov.objects) {
@@ -1163,7 +1152,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 					}
 					close(itemsToDeleteChannel)
 
-					numDeleteWorkers := 10 // Adjust as needed
+					numDeleteWorkers := 10 // 根据需要进行调整
 					for i := 0; i < numDeleteWorkers; i++ {
 						deletionWg.Add(1)
 						go func() {
@@ -1175,7 +1164,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 									if !strings.HasSuffix(s3Prefix, "/") {
 										s3Prefix += "/"
 									}
-									// Call the new function that updates progress
+									// 调用更新进度的新函数
 									err = ov.deleteFolderAndContentsWithProgress(ov.currentBucket, s3Prefix, &currentDeletedItems, &deletionMu, deleteProgressDialog, totalItemsToDelete)
 								} else {
 									err = ov.s3Client.DeleteObject(ov.currentBucket, selectedObject.Key)
@@ -1195,7 +1184,9 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 						}()
 					}
 					deletionWg.Wait()
-					deleteProgressDialog.Hide()
+					fyne.Do(func() {
+						deleteProgressDialog.Hide()
+					})
 
 					fyne.Do(func() {
 						if len(failedDeletions) > 0 {
@@ -1294,72 +1285,128 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 	return container.NewBorder(topBar, statusBar, nil, nil, centerContent, contentWithProgressBar)
 }
 
-// startUploadFolderProcess 启动文件夹上传流程
-func (ov *ObjectsView) startUploadFolderProcess(localPath string) {
-	progressDialog := dialog.NewProgressInfinite("正在上传文件夹", "正在扫描...", ov.window)
-	progressDialog.Show()
-	defer progressDialog.Hide()
-
-	baseFolderName := filepath.Base(localPath)
-
-	var filesToUpload []string
-	var foldersToCreate []string // 用于创建文件夹的 S3 key
-
-	err := filepath.Walk(localPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		relPath, err := filepath.Rel(localPath, path)
-		if err != nil {
-			return err
-		}
-
-		// 构造 S3 key，并确保总是使用 '/' 作为路径分隔符
-		s3Key := filepath.Join(ov.currentPrefix, baseFolderName, relPath)
-		s3Key = strings.ReplaceAll(s3Key, string(os.PathSeparator), "/")
-
-		if info.IsDir() {
-			foldersToCreate = append(foldersToCreate, s3Key+"/")
-		} else {
-			filesToUpload = append(filesToUpload, path)
-		}
-		return nil
+// startUploadProcess 启动上传流程 (文件或文件夹)
+func (ov *ObjectsView) startUploadProcess(localPaths []string) {
+	scanProgressDialog := dialog.NewProgressInfinite("正在准备上传", "正在扫描文件...", ov.window)
+	fyne.Do(func() {
+		scanProgressDialog.Show()
 	})
 
-	if err != nil {
+	var totalSize int64
+	var filesToUpload []struct {
+		LocalPath string
+		S3Key     string
+		Size      int64
+	}
+	var foldersToCreate []string // 用于创建文件夹的 S3 key
+	var scanErrors []error
+	var scanWg sync.WaitGroup
+	var scanMu sync.Mutex
+
+	// 步骤 1: 扫描所有文件并计算总大小
+	for _, localPath := range localPaths {
+		scanWg.Add(1)
+		go func(path string) {
+			defer scanWg.Done()
+			info, err := os.Stat(path)
+			if err != nil {
+				scanMu.Lock()
+				scanErrors = append(scanErrors, fmt.Errorf("无法获取项目信息 '%s': %w", filepath.Base(path), err))
+				scanMu.Unlock()
+				return
+			}
+
+			if info.IsDir() {
+				baseFolderName := filepath.Base(path)
+				err := filepath.Walk(path, func(p string, i os.FileInfo, err error) error {
+					if err != nil {
+						return err
+					}
+					relPath, err := filepath.Rel(path, p)
+					if err != nil {
+						return err
+					}
+					s3Key := filepath.Join(ov.currentPrefix, baseFolderName, relPath)
+					s3Key = strings.ReplaceAll(s3Key, string(os.PathSeparator), "/")
+
+					scanMu.Lock()
+					if i.IsDir() {
+						foldersToCreate = append(foldersToCreate, s3Key+"/")
+					} else {
+						filesToUpload = append(filesToUpload, struct {
+							LocalPath string
+							S3Key     string
+							Size      int64
+						}{LocalPath: p, S3Key: s3Key, Size: i.Size()})
+						totalSize += i.Size()
+					}
+					scanMu.Unlock()
+					return nil
+				})
+				if err != nil {
+					scanMu.Lock()
+					scanErrors = append(scanErrors, fmt.Errorf("遍历文件夹 '%s' 失败: %w", filepath.Base(path), err))
+					scanMu.Unlock()
+				}
+			} else {
+				fileName := filepath.Base(path)
+				s3Key := ov.currentPrefix + fileName
+				scanMu.Lock()
+				filesToUpload = append(filesToUpload, struct {
+					LocalPath string
+					S3Key     string
+					Size      int64
+				}{LocalPath: path, S3Key: s3Key, Size: info.Size()})
+				totalSize += info.Size()
+				scanMu.Unlock()
+			}
+		}(localPath)
+	}
+	scanWg.Wait()
+	fyne.Do(func() {
+		scanProgressDialog.Hide()
+	})
+
+	if len(scanErrors) > 0 {
 		fyne.Do(func() {
-			dialog.ShowError(fmt.Errorf("遍历文件夹失败: %v", err), ov.window)
+			dialog.ShowError(fmt.Errorf("扫描部分项目失败: %s", scanErrors[0].Error()), ov.window)
 		})
 		return
 	}
 
 	if len(filesToUpload) == 0 && len(foldersToCreate) == 0 {
-		return // 路径无效或不可读
+		fyne.Do(func() {
+			dialog.ShowInformation("提示", "没有可上传的项目。", ov.window)
+		})
+		return
 	}
 
+	// 步骤 2: 执行上传并显示进度条
+	uploadProgressDialog := dialog.NewProgress("正在上传", "正在上传项目...", ov.window)
 	fyne.Do(func() {
-		progressDialog.SetDismissText(fmt.Sprintf("准备上传 %d 个文件夹和 %d 个文件...", len(foldersToCreate), len(filesToUpload)))
+		uploadProgressDialog.Show()
 	})
 
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var failedItems []string
+	var bytesUploaded int64
+	var uploadWg sync.WaitGroup
+	var uploadMu sync.Mutex
+	var failedUploads []string
 	numWorkers := 10
 
-	// --- 1. 并行创建所有文件夹 ---
+	// 1. 并行创建所有文件夹
 	if len(foldersToCreate) > 0 {
 		folderChannel := make(chan string, len(foldersToCreate))
 		for i := 0; i < numWorkers; i++ {
-			wg.Add(1)
+			uploadWg.Add(1)
 			go func() {
-				defer wg.Done()
+				defer uploadWg.Done()
 				for s3Key := range folderChannel {
 					err := ov.s3Client.CreateFolder(ov.currentBucket, s3Key)
 					if err != nil {
 						log.Printf("创建文件夹 %s 失败: %v", s3Key, err)
-						mu.Lock()
-						failedItems = append(failedItems, s3Key)
-						mu.Unlock()
+						uploadMu.Lock()
+						failedUploads = append(failedUploads, s3Key)
+						uploadMu.Unlock()
 					}
 				}
 			}()
@@ -1368,70 +1415,55 @@ func (ov *ObjectsView) startUploadFolderProcess(localPath string) {
 			folderChannel <- key
 		}
 		close(folderChannel)
-		wg.Wait()
+		uploadWg.Wait() // 等待文件夹创建完成后再上传文件
 	}
 
-	// --- 2. 并行上传所有文件 ---
+	// 2. 并行上传所有文件
 	if len(filesToUpload) > 0 {
-		uploadChannel := make(chan string, len(filesToUpload))
+		fileChannel := make(chan struct {
+			LocalPath string
+			S3Key     string
+			Size      int64
+		}, len(filesToUpload))
+
 		for i := 0; i < numWorkers; i++ {
-			wg.Add(1)
+			uploadWg.Add(1)
 			go func() {
-				defer wg.Done()
-				for filePath := range uploadChannel {
-					relPath, err := filepath.Rel(localPath, filePath)
+				defer uploadWg.Done()
+				for fileInfo := range fileChannel {
+					err := ov.uploadSingleFile(fileInfo.LocalPath, fileInfo.S3Key, fileInfo.Size, totalSize, &bytesUploaded, uploadProgressDialog)
 					if err != nil {
-						log.Printf("无法获取相对路径: %v", err)
-						mu.Lock()
-						failedItems = append(failedItems, filepath.Base(filePath))
-						mu.Unlock()
-						continue
-					}
-					s3Key := filepath.Join(ov.currentPrefix, baseFolderName, relPath)
-					s3Key = strings.ReplaceAll(s3Key, string(os.PathSeparator), "/")
-
-					file, err := os.Open(filePath)
-					if err != nil {
-						log.Printf("无法打开文件 %s: %v", filePath, err)
-						mu.Lock()
-						failedItems = append(failedItems, filepath.Base(filePath))
-						mu.Unlock()
-						continue
-					}
-
-					fileInfo, err := file.Stat()
-					if err != nil {
-						log.Printf("无法获取文件信息 %s: %v", filePath, err)
-						mu.Lock()
-						failedItems = append(failedItems, filepath.Base(filePath))
-						mu.Unlock()
-						file.Close()
-						continue
-					}
-
-					err = ov.s3Client.UploadObject(ov.currentBucket, s3Key, file, fileInfo.Size())
-					file.Close()
-					if err != nil {
-						log.Printf("上传文件 %s 失败: %v", filePath, err)
-						mu.Lock()
-						failedItems = append(failedItems, filepath.Base(filePath))
-						mu.Unlock()
+						uploadMu.Lock()
+						failedUploads = append(failedUploads, filepath.Base(fileInfo.LocalPath))
+						uploadMu.Unlock()
+						log.Printf("上传文件 %s 失败: %v", fileInfo.LocalPath, err)
 					}
 				}
 			}()
 		}
 		for _, f := range filesToUpload {
-			uploadChannel <- f
+			fileChannel <- f
 		}
-		close(uploadChannel)
-		wg.Wait()
+		close(fileChannel)
+		uploadWg.Wait()
 	}
 
 	fyne.Do(func() {
-		if len(failedItems) > 0 {
-			dialog.ShowError(fmt.Errorf("部分项目上传失败: %s", strings.Join(failedItems, ", ")), ov.window)
+		uploadProgressDialog.Hide()
+	})
+
+	fyne.Do(func() {
+		if len(failedUploads) > 0 {
+			const maxDisplayedFailures = 5
+			displayMessage := "部分项目上传失败: "
+			if len(failedUploads) > maxDisplayedFailures {
+				displayMessage += strings.Join(failedUploads[:maxDisplayedFailures], ", ") + fmt.Sprintf(" 等 %d 个文件", len(failedUploads))
+			} else {
+				displayMessage += strings.Join(failedUploads, ", ")
+			}
+			dialog.ShowError(fmt.Errorf(displayMessage), ov.window)
 		} else {
-			dialog.ShowInformation("成功", fmt.Sprintf("文件夹 '%s' 上传完成。", baseFolderName), ov.window)
+			dialog.ShowInformation("成功", "所有项目上传完成。", ov.window)
 		}
 		ov.loadObjects()
 	})
@@ -1439,35 +1471,125 @@ func (ov *ObjectsView) startUploadFolderProcess(localPath string) {
 
 // startDownloadProcess 启动下载流程
 func (ov *ObjectsView) startDownloadProcess(localBasePath string) {
-	progressDialog := dialog.NewProgressInfinite("正在下载", "请稍候...", ov.window)
-	progressDialog.Show()
-	defer progressDialog.Hide()
+	scanProgressDialog := dialog.NewProgressInfinite("正在准备下载", "正在扫描待下载项目...", ov.window)
+	scanProgressDialog.Show()
 
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var failedDownloads []string
+	var totalDownloadSize int64
+	var filesToDownload []struct {
+		S3Object  s3client.S3Object
+		LocalPath string
+	}
+	var scanErrors []error
+	var scanWg sync.WaitGroup
+	var scanMu sync.Mutex
 
-	objectsToDownload := make(chan s3client.S3Object, len(ov.selectedObjectIDs))
+	// 步骤 1: 扫描所有选中的项目以确定总大小和要下载的文件
+	objectsToScan := make(chan s3client.S3Object, len(ov.selectedObjectIDs))
+	for id := range ov.selectedObjectIDs {
+		if id < len(ov.objects) {
+			objectsToScan <- ov.objects[id]
+		}
+	}
+	close(objectsToScan)
 
-	numWorkers := 10
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
+	numScanWorkers := 5 // 根据需要进行调整
+	for i := 0; i < numScanWorkers; i++ {
+		scanWg.Add(1)
 		go func() {
-			defer wg.Done()
-			for obj := range objectsToDownload {
-				ov.processDownloadItem(obj, localBasePath, &failedDownloads, &mu)
+			defer scanWg.Done()
+			for obj := range objectsToScan {
+				if obj.IsFolder {
+					// 列出前缀下的所有对象以获取它们的大小
+					folderObjects, err := ov.s3Client.ListAllObjectsUnderPrefix(ov.currentBucket, obj.Key)
+					scanMu.Lock()
+					if err != nil {
+						scanErrors = append(scanErrors, fmt.Errorf("扫描文件夹 '%s' 失败: %w", obj.Name, err))
+					} else {
+						for _, fo := range folderObjects {
+							if !fo.IsFolder { // Only count files
+								totalDownloadSize += fo.Size
+								relativePath := strings.TrimPrefix(fo.Key, obj.Key)
+								localFilePath := filepath.Join(localBasePath, obj.Name, relativePath)
+								filesToDownload = append(filesToDownload, struct {
+									S3Object  s3client.S3Object
+									LocalPath string
+								}{S3Object: fo, LocalPath: localFilePath})
+							}
+						}
+					}
+					scanMu.Unlock()
+				} else {
+					scanMu.Lock()
+					totalDownloadSize += obj.Size
+					localFilePath := filepath.Join(localBasePath, obj.Name)
+					filesToDownload = append(filesToDownload, struct {
+						S3Object  s3client.S3Object
+						LocalPath string
+					}{S3Object: obj, LocalPath: localFilePath})
+					scanMu.Unlock()
+				}
+			}
+		}()
+	}
+	scanWg.Wait()
+	fyne.Do(func() {
+		scanProgressDialog.Hide()
+	})
+
+	if len(scanErrors) > 0 {
+		fyne.Do(func() {
+			dialog.ShowError(fmt.Errorf("扫描部分项目失败: %s", scanErrors[0].Error()), ov.window)
+		})
+		return
+	}
+
+	if len(filesToDownload) == 0 {
+		fyne.Do(func() {
+			dialog.ShowInformation("提示", "没有可下载的项目。", ov.window)
+		})
+		return
+	}
+
+	// 步骤 2: 执行下载并显示进度条
+	downloadProgressDialog := dialog.NewProgress("正在下载", "正在下载项目...", ov.window)
+	downloadProgressDialog.Show()
+
+	var bytesDownloaded int64
+	var downloadWg sync.WaitGroup
+	var downloadMu sync.Mutex
+	var failedDownloads []string
+	numDownloadWorkers := 10
+
+	downloadChannel := make(chan struct {
+		S3Object  s3client.S3Object
+		LocalPath string
+	}, len(filesToDownload))
+
+	for i := 0; i < numDownloadWorkers; i++ {
+		downloadWg.Add(1)
+		go func() {
+			defer downloadWg.Done()
+			for fileInfo := range downloadChannel {
+				err := ov.downloadFile(fileInfo.S3Object, fileInfo.LocalPath, totalDownloadSize, &bytesDownloaded, downloadProgressDialog)
+				if err != nil {
+					downloadMu.Lock()
+					failedDownloads = append(failedDownloads, fileInfo.S3Object.Name)
+					downloadMu.Unlock()
+					log.Printf("下载文件 '%s' 失败: %v", fileInfo.S3Object.Name, err)
+				}
 			}
 		}()
 	}
 
-	for id := range ov.selectedObjectIDs {
-		if id < len(ov.objects) {
-			objectsToDownload <- ov.objects[id]
-		}
+	for _, f := range filesToDownload {
+		downloadChannel <- f
 	}
-	close(objectsToDownload)
+	close(downloadChannel)
 
-	wg.Wait()
+	downloadWg.Wait()
+	fyne.Do(func() {
+		downloadProgressDialog.Hide()
+	})
 
 	fyne.Do(func() {
 		if len(failedDownloads) > 0 {
@@ -1475,61 +1597,56 @@ func (ov *ObjectsView) startDownloadProcess(localBasePath string) {
 		} else {
 			dialog.ShowInformation("成功", "所有项目下载完成。", ov.window)
 		}
+		ov.loadObjects()
 	})
 }
 
 // processDownloadItem 处理单个项目（文件或文件夹）的下载
-func (ov *ObjectsView) processDownloadItem(obj s3client.S3Object, localBasePath string, failedDownloads *[]string, mu *sync.Mutex) {
+func (ov *ObjectsView) processDownloadItem(obj s3client.S3Object, localBasePath string, failedDownloads *[]string, mu *sync.Mutex, totalDownloadSize int64, bytesDownloaded *int64, downloadProgressDialog *dialog.ProgressDialog) {
 	if obj.IsFolder {
-		ov.downloadFolder(obj, localBasePath, failedDownloads, mu)
+		ov.downloadFolder(obj, localBasePath, failedDownloads, mu, totalDownloadSize, bytesDownloaded, downloadProgressDialog)
 	} else {
-		ov.downloadFile(obj, localBasePath, failedDownloads, mu)
+		// 对于单个文件，错误会直接从 downloadFile 返回
+		err := ov.downloadFile(obj, localBasePath, totalDownloadSize, bytesDownloaded, downloadProgressDialog)
+		if err != nil {
+			mu.Lock()
+			*failedDownloads = append(*failedDownloads, obj.Name)
+			mu.Unlock()
+			log.Printf("下载文件 '%s' 失败: %v", obj.Name, err)
+		}
 	}
 }
 
 // downloadFile 下载单个文件
-func (ov *ObjectsView) downloadFile(obj s3client.S3Object, localBasePath string, failedDownloads *[]string, mu *sync.Mutex) {
-	localPath := filepath.Join(localBasePath, obj.Name)
-
+func (ov *ObjectsView) downloadFile(obj s3client.S3Object, localPath string, totalSize int64, bytesDownloaded *int64, progressDialog *dialog.ProgressDialog) error {
 	if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
-		log.Printf("创建本地目录失败: %v", err)
-		mu.Lock()
-		*failedDownloads = append(*failedDownloads, obj.Name)
-		mu.Unlock()
-		return
+		return fmt.Errorf("创建本地目录失败: %w", err)
 	}
 
 	localFile, err := os.Create(localPath)
 	if err != nil {
-		log.Printf("创建本地文件失败: %v", err)
-		mu.Lock()
-		*failedDownloads = append(*failedDownloads, obj.Name)
-		mu.Unlock()
-		return
+		return fmt.Errorf("创建本地文件失败: %w", err)
 	}
 	defer localFile.Close()
 
 	body, err := ov.s3Client.DownloadObject(ov.currentBucket, obj.Key)
 	if err != nil {
-		log.Printf("从 S3 下载失败: %v", err)
-		mu.Lock()
-		*failedDownloads = append(*failedDownloads, obj.Name)
-		mu.Unlock()
-		return
+		return fmt.Errorf("从 S3 下载失败: %w", err)
 	}
 	defer body.Close()
 
-	_, err = io.Copy(localFile, body)
+	// 使用进度跟踪器包装 S3 下载的数据流
+	readerWithProgress := NewProgressTracker(body, totalSize, bytesDownloaded, progressDialog)
+
+	_, err = io.Copy(localFile, readerWithProgress)
 	if err != nil {
-		log.Printf("写入本地文件失败: %v", err)
-		mu.Lock()
-		*failedDownloads = append(*failedDownloads, obj.Name)
-		mu.Unlock()
+		return fmt.Errorf("写入本地文件失败: %w", err)
 	}
+	return nil
 }
 
 // downloadFolder 递归下载文件夹
-func (ov *ObjectsView) downloadFolder(folder s3client.S3Object, localBasePath string, failedDownloads *[]string, mu *sync.Mutex) {
+func (ov *ObjectsView) downloadFolder(folder s3client.S3Object, localBasePath string, failedDownloads *[]string, mu *sync.Mutex, totalDownloadSize int64, bytesDownloaded *int64, downloadProgressDialog *dialog.ProgressDialog) {
 	objectsToDownload, err := ov.s3Client.ListAllObjectsUnderPrefix(ov.currentBucket, folder.Key)
 	if err != nil {
 		log.Printf("列出文件夹 '%s' 内容失败: %v", folder.Name, err)
@@ -1546,7 +1663,14 @@ func (ov *ObjectsView) downloadFolder(folder s3client.S3Object, localBasePath st
 			defer wg.Done()
 			relativePath := strings.TrimPrefix(fileToDownload.Key, folder.Key)
 			localPath := filepath.Join(localBasePath, folder.Name, relativePath)
-			ov.downloadFile(s3client.S3Object{Name: filepath.Base(localPath), Key: fileToDownload.Key}, filepath.Dir(localPath), failedDownloads, mu)
+			// 传递所有与进度相关的参数
+			err := ov.downloadFile(fileToDownload, localPath, totalDownloadSize, bytesDownloaded, downloadProgressDialog)
+			if err != nil {
+				mu.Lock()
+				*failedDownloads = append(*failedDownloads, fileToDownload.Name)
+				mu.Unlock()
+				log.Printf("下载文件 '%s' 失败: %v", fileToDownload.Name, err)
+			}
 		}(obj)
 	}
 	wg.Wait()
@@ -1616,7 +1740,7 @@ func (ov *ObjectsView) deleteFolderAndContentsWithProgress(bucket, prefix string
 		return fmt.Errorf("列出文件夹 '%s' 内容失败: %w", prefix, err)
 	}
 
-	// Add the folder object itself to the list of keys to delete
+	// 将文件夹对象本身添加到待删除键的列表中
 	keysToDelete := append(keys, prefix)
 
 	var wg sync.WaitGroup
@@ -1633,7 +1757,7 @@ func (ov *ObjectsView) deleteFolderAndContentsWithProgress(bucket, prefix string
 				err := ov.s3Client.DeleteObject(bucket, key)
 				if err != nil {
 					mu.Lock()
-					if len(deletionErrors) == 0 { // Only store the first error
+					if len(deletionErrors) == 0 { // 仅存储第一个错误
 						deletionErrors = append(deletionErrors, err)
 					}
 					mu.Unlock()
