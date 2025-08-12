@@ -18,6 +18,11 @@ S3 Explorer 是一个基于 Go 语言和 Fyne UI 框架开发的桌面应用程�
 *   **后端**: Go 语言
 *   **UI 框架**: Fyne (fyne.io)
 *   **S3 交互**: AWS SDK for Go v2
+*   **代码结构**: 
+    * `common` - 公共工具函数包
+    * `config` - 配置管理包
+    * `s3client` - S3客户端封装包
+    * `ui` - 用户界面组件包
 
 ## 安装
 

@@ -29,6 +29,7 @@ import (
 	"strings"
 	"sync"
 
+	"s3-explorer/common"
 	"s3-explorer/s3client"
 )
 
@@ -62,6 +63,101 @@ func (t *thumbnailResource) Content() []byte {
 		return nil
 	}
 	return buf.Bytes()
+}
+
+
+
+// --- 主视图 ---
+
+// ObjectsView 结构体用于管理右侧的文件/文件夹列表视图
+type ObjectsView struct {
+	window              fyne.Window
+	s3Client            *s3client.S3Client
+	currentBucket       string
+	currentPrefix       string
+	objects             []s3client.S3Object
+	objectList          *widget.List
+	breadcrumbContainer *fyne.Container
+	selectedObjectIDs   map[widget.ListItemID]struct{}
+	lastSelectedID      widget.ListItemID
+	loadingIndicator    *ThinProgressBar
+	downloadButton      *widget.Button
+	deleteButton        *widget.Button
+	serviceInfoButton   *widget.Button
+
+	// 分页相关状态
+	currentPage    int
+	pageSize       int
+	pageMarkers    []string
+	nextPageMarker *string
+	prevButton     *widget.Button
+	nextButton     *widget.Button
+	pageInfoLabel  *widget.Label
+	pageSizeEntry  *minWidthEntry
+
+	// 视图切换
+	viewMode            string
+	viewSwitchButton    *widget.Button
+	mainContent         *fyne.Container
+	currentServiceAlias string
+
+	// OnViewModeChanged 是一个回调函数，当视图模式改变时触发
+	OnViewModeChanged func(alias, newMode string)
+}
+
+// NewObjectsView 创建并返回一个新的 ObjectsView 实例
+func NewObjectsView(w fyne.Window) *ObjectsView {
+	ov := &ObjectsView{
+		window:            w,
+		selectedObjectIDs: make(map[widget.ListItemID]struct{}),
+		lastSelectedID:    -1,
+		loadingIndicator:  NewThinProgressBar(),
+		serviceInfoButton: widget.NewButton("未选择服务", func() {}),
+		currentPage:       1,
+		pageSize:          1000,
+		pageMarkers:       []string{""},
+		viewMode:          listViewMode, // 默认是列表视图
+	}
+	ov.serviceInfoButton.Importance = widget.LowImportance
+	ov.serviceInfoButton.Disable()
+	ov.loadingIndicator.Hide()
+
+	ov.window.SetOnDropped(func(_ fyne.Position, uris []fyne.URI) {
+		ov.handleDrop(uris)
+	})
+
+	return ov
+}
+
+// SetViewMode 设置当前对象视图的模式（列表或网格）
+func (ov *ObjectsView) SetViewMode(mode string) {
+	if ov.viewSwitchButton == nil {
+		return
+	}
+	if mode == gridViewMode {
+		ov.viewMode = gridViewMode
+		ov.viewSwitchButton.SetIcon(theme.ListIcon())
+	} else {
+		ov.viewMode = listViewMode
+		ov.viewSwitchButton.SetIcon(theme.GridIcon())
+	}
+	ov.refreshObjectView()
+}
+
+// SetServiceAlias 设置并显示当前服务的别名
+func (ov *ObjectsView) SetServiceAlias(alias string) {
+	ov.currentServiceAlias = alias
+	fyne.Do(func() {
+		if alias != "" {
+			ov.serviceInfoButton.SetText(fmt.Sprintf("当前服务: %s", alias))
+		} else {
+			ov.serviceInfoButton.SetText("未选择服务")
+		}
+		ov.serviceInfoButton.Refresh()
+		if ov.mainContent != nil {
+			ov.mainContent.Refresh()
+		}
+	})
 }
 
 // --- 自定义组件 ---
@@ -280,99 +376,6 @@ func newGridEntry(ov *ObjectsView) *gridEntry {
 	return entry
 }
 
-// --- 主视图 ---
-
-// ObjectsView 结构体用于管理右侧的文件/文件夹列表视图
-type ObjectsView struct {
-	window              fyne.Window
-	s3Client            *s3client.S3Client
-	currentBucket       string
-	currentPrefix       string
-	objects             []s3client.S3Object
-	objectList          *widget.List
-	breadcrumbContainer *fyne.Container
-	selectedObjectIDs   map[widget.ListItemID]struct{}
-	lastSelectedID      widget.ListItemID
-	loadingIndicator    *ThinProgressBar
-	downloadButton      *widget.Button
-	deleteButton        *widget.Button
-	serviceInfoButton   *widget.Button
-
-	// 分页相关状态
-	currentPage    int
-	pageSize       int
-	pageMarkers    []string
-	nextPageMarker *string
-	prevButton     *widget.Button
-	nextButton     *widget.Button
-	pageInfoLabel  *widget.Label
-	pageSizeEntry  *minWidthEntry
-
-	// 视图切换
-	viewMode            string
-	viewSwitchButton    *widget.Button
-	mainContent         *fyne.Container
-	currentServiceAlias string
-
-	// OnViewModeChanged 是一个回调函数，当视图模式改变时触发
-	OnViewModeChanged func(alias, newMode string)
-}
-
-// NewObjectsView 创建并返回一个新的 ObjectsView 实例
-func NewObjectsView(w fyne.Window) *ObjectsView {
-	ov := &ObjectsView{
-		window:            w,
-		selectedObjectIDs: make(map[widget.ListItemID]struct{}),
-		lastSelectedID:    -1,
-		loadingIndicator:  NewThinProgressBar(),
-		serviceInfoButton: widget.NewButton("未选择服务", func() {}),
-		currentPage:       1,
-		pageSize:          1000,
-		pageMarkers:       []string{""},
-		viewMode:          listViewMode, // 默认是列表视图
-	}
-	ov.serviceInfoButton.Importance = widget.LowImportance
-	ov.serviceInfoButton.Disable()
-	ov.loadingIndicator.Hide()
-
-	ov.window.SetOnDropped(func(_ fyne.Position, uris []fyne.URI) {
-		ov.handleDrop(uris)
-	})
-
-	return ov
-}
-
-// SetViewMode 设置当前对象视图的模式（列表或网格）
-func (ov *ObjectsView) SetViewMode(mode string) {
-	if ov.viewSwitchButton == nil {
-		return
-	}
-	if mode == gridViewMode {
-		ov.viewMode = gridViewMode
-		ov.viewSwitchButton.SetIcon(theme.ListIcon())
-	} else {
-		ov.viewMode = listViewMode
-		ov.viewSwitchButton.SetIcon(theme.GridIcon())
-	}
-	ov.refreshObjectView()
-}
-
-// SetServiceAlias 设置并显示当前服务的别名
-func (ov *ObjectsView) SetServiceAlias(alias string) {
-	ov.currentServiceAlias = alias
-	fyne.Do(func() {
-		if alias != "" {
-			ov.serviceInfoButton.SetText(fmt.Sprintf("当前服务: %s", alias))
-		} else {
-			ov.serviceInfoButton.SetText("未选择服务")
-		}
-		ov.serviceInfoButton.Refresh()
-		if ov.mainContent != nil {
-			ov.mainContent.Refresh()
-		}
-	})
-}
-
 // SetBucketAndPrefix 设置当前存储桶和前缀，并加载对象列表
 func (ov *ObjectsView) SetBucketAndPrefix(client *s3client.S3Client, bucket, prefix string) {
 	ov.s3Client = client
@@ -481,17 +484,15 @@ func (ov *ObjectsView) generateThumbnail(index int, item s3client.S3Object) {
 				ov.objectList.RefreshItem(index)
 			}
 		} else {
-			if ov.mainContent != nil && len(ov.mainContent.Objects) > 0 {
-				if scroll, ok := ov.mainContent.Objects[0].(*container.Scroll); ok {
-					if grid, ok := scroll.Content.(*fyne.Container); ok {
-						if index < len(grid.Objects) {
-							if entry, ok := grid.Objects[index].(*gridEntry); ok {
-								entry.icon.SetResource(thumbRes)
+			if scroll, ok := ov.mainContent.Objects[0].(*container.Scroll); ok {
+							if grid, ok := scroll.Content.(*fyne.Container); ok {
+								if index < len(grid.Objects) {
+									if entry, ok := grid.Objects[index].(*gridEntry); ok {
+										entry.icon.SetResource(thumbRes)
+									}
+								}
 							}
 						}
-					}
-				}
-			}
 		}
 	})
 }
@@ -1786,19 +1787,17 @@ func (ov *ObjectsView) deleteFolderAndContentsWithProgress(bucket, prefix string
 	return nil
 }
 
+
 // getIconForFile 根据文件名返回对应的图标
 func getIconForFile(name string) fyne.Resource {
-	ext := strings.ToLower(filepath.Ext(name))
-	switch ext {
-	case ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg", ".webp":
+	switch common.GetIconForFile(name) {
+	case "image":
 		return theme.FileImageIcon()
-	case ".mp3", ".wav", ".ogg", ".flac":
+	case "audio":
 		return theme.FileAudioIcon()
-	case ".mp4", ".avi", ".mov", ".mkv", ".webm":
+	case "video":
 		return theme.FileVideoIcon()
-	case ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2":
-		return theme.FileIcon()
-	case ".txt", ".md", ".log", ".json", ".xml", ".yaml", ".yml", ".ini", ".cfg":
+	case "text":
 		return theme.FileTextIcon()
 	default:
 		return theme.FileIcon()
@@ -1806,50 +1805,15 @@ func getIconForFile(name string) fyne.Resource {
 }
 
 func isPreviewableImage(name string) bool {
-	ext := strings.ToLower(filepath.Ext(name))
-	switch ext {
-	case ".png", ".jpg", ".jpeg", ".gif":
-		return true
-	default:
-		return false
-	}
+	return common.IsPreviewableImage(name)
 }
 
 // formatFileNameForDisplay 格式化文件名，确保单行显示，过长则截断并保留后缀
 func formatFileNameForDisplay(fileName string, maxDisplayLength int) string {
-	ext := filepath.Ext(fileName)
-	baseName := strings.TrimSuffix(fileName, ext)
-
-	// 计算去除“...”和扩展名后，基本名称的可用长度
-	// maxDisplayLength - len("...") - len(ext)
-	availableBaseLen := maxDisplayLength - 3 - len(ext) // 3 个字符是 "..."
-
-	if availableBaseLen < 0 { // 如果扩展名 + "..." 已经太长
-		// 这种情况意味着扩展名本身太长，无法适应maxDisplayLength
-		// 或者maxDisplayLength太小。
-		// 为简单起见，如果扩展名 + "..." 太长，则直接截断整个文件名。
-		if len(fileName) > maxDisplayLength {
-			return fileName[:maxDisplayLength-3] + "..."
-		}
-		return fileName
-	}
-
-	if len(baseName) > availableBaseLen {
-		return baseName[:availableBaseLen] + "..." + ext
-	}
-	return fileName
+	return common.FormatFileNameForDisplay(fileName, maxDisplayLength)
 }
 
 // formatBytes 格式化字节大小为可读的字符串
 func formatBytes(b int64) string {
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
-	}
-	div, exp := int64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+	return common.FormatBytes(b)
 }
