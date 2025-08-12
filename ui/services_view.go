@@ -70,7 +70,7 @@ type ServicesView struct {
 	configStore       *config.ConfigStore
 	serviceList       *widget.List
 	selectedServiceID widget.ListItemID
-	loadingIndicator  *widget.ProgressBarInfinite
+	loadingIndicator  *ThinProgressBar
 	editButton        *widget.Button
 	deleteButton      *widget.Button
 
@@ -82,7 +82,7 @@ func NewServicesView(w fyne.Window) *ServicesView {
 	sv := &ServicesView{
 		window:            w,
 		selectedServiceID: -1,
-		loadingIndicator:  widget.NewProgressBarInfinite(),
+		loadingIndicator:  NewThinProgressBar(),
 	}
 	sv.loadingIndicator.Hide()
 	sv.loadConfig(nil)
@@ -364,5 +364,7 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 		sv.loadingIndicator,
 	)
 
-	return container.NewBorder(buttonBox, nil, nil, nil, container.NewVBox(widget.NewSeparator()), sv.serviceList)
+	topContent := container.NewVBox(buttonBox, widget.NewSeparator())
+
+	return container.NewBorder(topContent, nil, nil, nil, sv.serviceList)
 }

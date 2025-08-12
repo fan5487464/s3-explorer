@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"math"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -65,6 +66,19 @@ func (p *ThinProgressBar) Hide() {
 		p.anim.Stop()
 	}
 	p.BaseWidget.Hide()
+}
+
+// PulseAnimation creates a pulsing effect for the progress bar
+func (p *ThinProgressBar) PulseAnimation() *fyne.Animation {
+	return &fyne.Animation{
+		Duration: time.Millisecond * 500,
+		Tick: func(done float32) {
+			// Pulsing effect by changing the height
+			height := 2 + float32(1-math.Cos(float64(done)*2*math.Pi))*2
+			p.line.Resize(fyne.NewSize(p.line.Size().Width, height))
+		},
+		RepeatCount: fyne.AnimationRepeatForever,
+	}
 }
 
 type thinProgressBarRenderer struct {

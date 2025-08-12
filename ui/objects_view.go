@@ -3,15 +3,6 @@ package ui
 import (
 	"bytes"
 	"fmt"
-	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/canvas"
-	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/driver/desktop"
-	"fyne.io/fyne/v2/layout"
-	"fyne.io/fyne/v2/theme"
-	"fyne.io/fyne/v2/widget"
-	"github.com/nfnt/resize"
 	"image"
 	"image/color"
 	_ "image/gif"
@@ -28,6 +19,16 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/driver/desktop"
+	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
+	"fyne.io/fyne/v2/widget"
+	"github.com/nfnt/resize"
 
 	"s3-explorer/common"
 	"s3-explorer/s3client"
@@ -64,8 +65,6 @@ func (t *thumbnailResource) Content() []byte {
 	}
 	return buf.Bytes()
 }
-
-
 
 // --- 主视图 ---
 
@@ -487,14 +486,14 @@ func (ov *ObjectsView) generateThumbnail(index int, item s3client.S3Object) {
 			}
 		} else {
 			if scroll, ok := ov.mainContent.Objects[0].(*container.Scroll); ok {
-							if grid, ok := scroll.Content.(*fyne.Container); ok {
-								if index < len(grid.Objects) {
-									if entry, ok := grid.Objects[index].(*gridEntry); ok {
-										entry.icon.SetResource(thumbRes)
-									}
-								}
-							}
+				if grid, ok := scroll.Content.(*fyne.Container); ok {
+					if index < len(grid.Objects) {
+						if entry, ok := grid.Objects[index].(*gridEntry); ok {
+							entry.icon.SetResource(thumbRes)
 						}
+					}
+				}
+			}
 		}
 	})
 }
@@ -897,7 +896,7 @@ func (ov *ObjectsView) createListView() fyne.CanvasObject {
 			if id >= len(items) {
 				return
 			}
-			
+
 			item := items[id]
 			entry := obj.(*listEntry)
 			entry.id = id
@@ -938,7 +937,7 @@ func (ov *ObjectsView) createListView() fyne.CanvasObject {
 func (ov *ObjectsView) createGridView() fyne.CanvasObject {
 	var items []fyne.CanvasObject
 	displayedObjects := ov.getDisplayedObjects()
-	
+
 	for i := 0; i < len(displayedObjects); i++ {
 		item := displayedObjects[i]
 		entry := newGridEntry(ov)
@@ -1300,7 +1299,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 
 	// 创建一个用于裁剪进度条的滚动容器
 	clippedProgressBar := container.NewScroll(ov.loadingIndicator)
-	clippedProgressBar.SetMinSize(fyne.NewSize(0, ov.loadingIndicator.MinSize().Height))
+	clippedProgressBar.SetMinSize(fyne.NewSize(0, ov.loadingIndicator.MinSize().Height)) // 确保它占用最小高度
 
 	// 将主内容区和裁剪后的加载指示器放入一个堆栈容器中
 	contentWithProgressBar := container.NewStack(ov.mainContent, clippedProgressBar)
@@ -1815,7 +1814,6 @@ func (ov *ObjectsView) deleteFolderAndContentsWithProgress(bucket, prefix string
 	return nil
 }
 
-
 // getIconForFile 根据文件名返回对应的图标
 func getIconForFile(name string) fyne.Resource {
 	switch common.GetIconForFile(name) {
@@ -1855,7 +1853,7 @@ func (ov *ObjectsView) filterObjects(searchTerm string) {
 		// 过滤对象列表
 		ov.filteredObjects = make([]s3client.S3Object, 0)
 		searchTerm = strings.ToLower(searchTerm)
-		
+
 		for _, obj := range ov.objects {
 			// 将对象名称转换为小写进行不区分大小写的搜索
 			if strings.Contains(strings.ToLower(obj.Name), searchTerm) {
@@ -1863,12 +1861,12 @@ func (ov *ObjectsView) filterObjects(searchTerm string) {
 			}
 		}
 	}
-	
+
 	// 重置选择状态
 	ov.selectedObjectIDs = make(map[widget.ListItemID]struct{})
 	ov.lastSelectedID = -1
 	ov.updateButtonsState()
-	
+
 	// 刷新视图
 	ov.refreshObjectView()
 }

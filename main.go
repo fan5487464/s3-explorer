@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"fyne.io/fyne/v2/dialog"
 	"image/color" // 导入 image/color 包用于颜色定义
 	"io/ioutil"   // 导入 ioutil 包用于读取文件
 	"log"         // 导入 log 包用于日志输出
@@ -12,6 +11,7 @@ import (
 	"fyne.io/fyne/v2"           // 导入 fyne 主包
 	"fyne.io/fyne/v2/app"       // 导入 fyne 应用包
 	"fyne.io/fyne/v2/container" // 导入 fyne 容器包
+	"fyne.io/fyne/v2/dialog"    // 导入 fyne 对话框包
 	"fyne.io/fyne/v2/theme"     // 导入 fyne 主题包
 	"fyne.io/fyne/v2/widget"
 	"s3-explorer/s3client" // 导入 s3client 包
