@@ -1475,16 +1475,16 @@ func (ov *ObjectsView) downloadFolder(folder s3client.S3Object, localBasePath st
 
 // deleteFolderAndContents 递归删除文件夹及其所有内容
 func (ov *ObjectsView) deleteFolderAndContents(bucket, prefix string) error {
-	// 1. 列出前缀下的所有对象
-	objects, err := ov.s3Client.ListAllObjectsUnderPrefix(bucket, prefix)
+	// 1. 列出前缀下的所有对象键（包括文件和文件夹标记）
+	keys, err := ov.s3Client.ListAllKeysUnderPrefix(bucket, prefix)
 	if err != nil {
 		return fmt.Errorf("列出文件夹 '%s' 内容失败: %w", prefix, err)
 	}
 
 	// 2. 创建要删除的键列表
-	keysToDelete := make([]string, 0, len(objects)+1)
-	for _, obj := range objects {
-		keysToDelete = append(keysToDelete, obj.Key)
+	keysToDelete := make([]string, 0, len(keys)+1)
+	for _, key := range keys {
+		keysToDelete = append(keysToDelete, key)
 	}
 	// 3. 将文件夹对象本身添加到列表
 	keysToDelete = append(keysToDelete, prefix)

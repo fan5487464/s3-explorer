@@ -270,3 +270,24 @@ func (sc *S3Client) ListAllObjectsUnderPrefix(bucketName, prefix string) ([]S3Ob
 
 	return objects, nil
 }
+
+// ListAllKeysUnderPrefix recursively lists all object keys (files and folder markers) under a given prefix.
+func (sc *S3Client) ListAllKeysUnderPrefix(bucketName, prefix string) ([]string, error) {
+	var keys []string
+	paginator := s3.NewListObjectsV2Paginator(sc.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucketName),
+		Prefix: aws.String(prefix),
+	})
+
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(context.TODO())
+		if err != nil {
+			return nil, fmt.Errorf("列出对象键失败: %w", err)
+		}
+
+		for _, content := range page.Contents {
+			keys = append(keys, *content.Key)
+		}
+	}
+	return keys, nil
+}
