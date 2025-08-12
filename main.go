@@ -109,7 +109,7 @@ func main() {
 	}
 
 	// 创建一个新的 Fyne 应用，并指定一个唯一的 ID
-	a := app.NewWithID("com.yourcompany.s3explorer")
+	a := app.NewWithID("link.yifan.s3explorer")
 
 	// 设置自定义主题
 	a.Settings().SetTheme(&customTheme{})
