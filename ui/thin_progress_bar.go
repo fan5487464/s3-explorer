@@ -95,7 +95,8 @@ func (p *ThinProgressBar) Show() {
 				return
 			}
 			barWidth := p.Size().Width / 4 // 移动条是总宽度的 1/4
-			offset := val*(p.Size().Width+barWidth) - barWidth
+			// 限制offset的范围，确保动画不会超出边界
+			offset := val * (p.Size().Width - barWidth)
 
 			p.line.Move(fyne.NewPos(offset, 0))
 			p.line.Resize(fyne.NewSize(barWidth, p.MinSize().Height))

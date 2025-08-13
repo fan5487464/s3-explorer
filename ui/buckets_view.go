@@ -334,10 +334,11 @@ func (bv *BucketsView) GetContent() fyne.CanvasObject {
 		layout.NewSpacer(),
 	)
 
-	topContent := container.NewVBox(buttonBox, widget.NewSeparator())
+	// 将按钮、加载指示器和分隔符组合成顶部内容
+	topContent := container.NewVBox(buttonBox, bv.loadingIndicator, widget.NewSeparator())
 
-	// 使用Border布局将进度条放置在列表上方，以解决滚动问题
-	bv.bucketContainer = container.NewBorder(bv.loadingIndicator, nil, nil, nil, bv.bucketList)
+	// bucketContainer 现在只包含列表本身，以便动画可以引用它
+	bv.bucketContainer = container.NewMax(bv.bucketList)
 
 	return container.NewBorder(topContent, nil, nil, nil, bv.bucketContainer)
 }

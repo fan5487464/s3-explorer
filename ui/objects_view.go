@@ -660,18 +660,20 @@ func (ov *ObjectsView) handleCopy() {
 		copyTimeLock.Unlock()
 
 		// 显示提示信息
+		var message string
 		if len(objectsToCopy) == 1 {
-			dialog.ShowInformation("复制成功", fmt.Sprintf("已将 \"%s\" 添加到复制列表。", objectsToCopy[0].Name), ov.window)
+			message = fmt.Sprintf("已复制: %s", objectsToCopy[0].Name)
 		} else {
-			dialog.ShowInformation("复制成功", fmt.Sprintf("已将 %d 个项目添加到复制列表。", len(objectsToCopy)), ov.window)
+			message = fmt.Sprintf("已复制 %d 个项目", len(objectsToCopy))
 		}
+		ShowToast(ov.window, message)
 	}
 }
 
 // handlePaste 处理粘贴操作，从剪贴板获取内容并执行相应操作
 func (ov *ObjectsView) handlePaste() {
 	if ov.s3Client == nil || ov.currentBucket == "" {
-		dialog.ShowInformation("提示", "请先选择一个 S3 服务和存储桶。", ov.window)
+		ShowToast(ov.window, "请先选择一个 S3 服务和存储桶。")
 		return
 	}
 
@@ -818,7 +820,7 @@ func (ov *ObjectsView) handlePaste() {
 	
 	// 无法识别剪贴板内容格式
 	log.Printf("无法识别剪贴板内容格式")
-	dialog.ShowInformation("提示", "剪贴板中没有可识别的文件路径。", ov.window)
+	ShowToast(ov.window, "剪贴板中没有可识别的文件路径。")
 }
 
 // updateButtonsState 根据当前选择状态更新按钮的可用性
@@ -1222,7 +1224,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 	createFolderButton := widget.NewButtonWithIcon("", theme.FolderNewIcon(), func() {
 		// 动画结束后执行的逻辑
 		if ov.s3Client == nil || ov.currentBucket == "" {
-			dialog.ShowInformation("提示", "请先选择一个 S3 服务和存储桶。", ov.window)
+			ShowToast(ov.window, "请先选择一个 S3 服务和存储桶。")
 			return
 		}
 
@@ -1241,7 +1243,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 			if confirmed {
 				folderName := folderNameEntry.Text
 				if folderName == "" {
-					dialog.ShowInformation("提示", "文件夹名称不能为空。", ov.window)
+					ShowToast(ov.window, "文件夹名称不能为空。")
 					return
 				}
 				s3Key := ov.currentPrefix + folderName + "/"
@@ -1252,7 +1254,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 						if err != nil {
 							dialog.ShowError(fmt.Errorf("创建文件夹失败: %v", err), ov.window)
 						} else {
-							dialog.ShowInformation("成功", fmt.Sprintf("文件夹 '%s' 创建成功！", folderName), ov.window)
+							ShowToast(ov.window, fmt.Sprintf("文件夹 '%s' 创建成功！", folderName))
 							ov.loadObjects()
 						}
 					})
@@ -1278,7 +1280,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 	uploadButton := widget.NewButtonWithIcon("", theme.UploadIcon(), func() {
 		// 动画结束后执行的逻辑
 		if ov.s3Client == nil || ov.currentBucket == "" {
-			dialog.ShowInformation("提示", "请先选择一个 S3 服务和存储桶。", ov.window)
+			ShowToast(ov.window, "请先选择一个 S3 服务和存储桶。")
 			return
 		}
 
@@ -1316,20 +1318,6 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 		fileBtn := widget.NewButtonWithIcon("上传文件", theme.FileIcon(), fileUploadFunc)
 		folderBtn := widget.NewButtonWithIcon("上传文件夹", theme.FolderIcon(), folderUploadFunc)
 
-		// 添加调试按钮
-		debugBtn := widget.NewButton("调试: 检查剪贴板", func() {
-			content := ov.window.Clipboard().Content()
-			log.Printf("调试 - 剪贴板内容长度: %d", len(content))
-			if len(content) > 1000 {
-				log.Printf("调试 - 剪贴板内容 (前1000字符): %s", content[:1000])
-			} else {
-				log.Printf("调试 - 剪贴板内容: %s", content)
-			}
-
-			// 显示对话框
-			dialog.ShowInformation("剪贴板内容", fmt.Sprintf("长度: %d\n内容: %s", len(content), content), ov.window)
-		})
-
 		// 设置按钮大小和样式
 		fileBtn.Importance = widget.HighImportance
 		folderBtn.Importance = widget.HighImportance
@@ -1340,13 +1328,11 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 			widget.NewSeparator(),
 			container.NewPadded(fileBtn),
 			container.NewPadded(folderBtn),
-			widget.NewSeparator(),
-			container.NewPadded(debugBtn), // 添加调试按钮
 		)
 
 		// 创建自定义对话框并设置合适的尺寸
 		uploadDialog := dialog.NewCustom("上传文件", "取消", content, ov.window)
-		uploadDialog.Resize(fyne.NewSize(300, 250)) // 增加高度以容纳调试按钮
+		uploadDialog.Resize(fyne.NewSize(300, 200)) // 调整高度
 		uploadDialog.Show()
 	})
 
@@ -1365,7 +1351,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 	ov.downloadButton = widget.NewButtonWithIcon("", theme.DownloadIcon(), func() {
 		// 动画结束后执行的逻辑
 		if len(ov.selectedObjectIDs) == 0 {
-			dialog.ShowInformation("提示", "请至少选择一个要下载的项目。", ov.window)
+			ShowToast(ov.window, "请至少选择一个要下载的项目。")
 			return
 		}
 
@@ -1388,7 +1374,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 		// 动画结束后执行的逻辑
 		selectedCount := len(ov.selectedObjectIDs)
 		if selectedCount == 0 {
-			dialog.ShowInformation("提示", "请先选择要删除的文件或文件夹。", ov.window)
+			ShowToast(ov.window, "请先选择要删除的文件或文件夹。")
 			return
 		}
 
@@ -1517,7 +1503,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 						if len(failedDeletions) > 0 {
 							dialog.ShowError(fmt.Errorf("部分项目删除失败: %s", strings.Join(failedDeletions, ", ")), ov.window)
 						} else {
-							dialog.ShowInformation("成功", fmt.Sprintf("%d 个项目已成功删除。", selectedCount), ov.window)
+							ShowToast(ov.window, fmt.Sprintf("%d 个项目已成功删除。", selectedCount))
 						}
 						ov.resetPagingAndSelection()
 						ov.loadObjects()
@@ -1573,6 +1559,9 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 	fileOpsButtons := container.NewHBox(createFolderButton, uploadButton, ov.downloadButton, ov.deleteButton, ov.viewSwitchButton)
 
 	topBar := container.NewBorder(nil, nil, ov.breadcrumbContainer, fileOpsButtons, ov.searchEntry)
+
+	// 将顶部栏、加载指示器和分隔符组合在一起
+	topContent := container.NewVBox(topBar, ov.loadingIndicator, widget.NewSeparator())
 
 	// --- 分页控件 ---
 	ov.prevButton = widget.NewButtonWithIcon("", theme.NavigateBackIcon(), func() {
@@ -1647,10 +1636,8 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 	ov.mainContent = container.NewMax()
 	ov.refreshObjectView() // 初始视图
 
-	// 使用Border布局将进度条放置在主内容区域上方，以解决滚动问题
-	contentWithProgressBar := container.NewBorder(ov.loadingIndicator, nil, nil, nil, ov.mainContent)
-
-	return container.NewBorder(topBar, statusBar, nil, nil, contentWithProgressBar)
+	// 主布局，顶部是组合控件，中间是主内容
+	return container.NewBorder(topContent, statusBar, nil, nil, ov.mainContent)
 }
 
 // findAvailableObjectKey 检查目标key是否存在，如果存在，则返回一个带递增数字的新key。
@@ -1789,7 +1776,7 @@ func (ov *ObjectsView) startUploadProcess(localPaths []string) {
 
 	if len(filesToUpload) == 0 && len(foldersToCreate) == 0 {
 		fyne.Do(func() {
-			dialog.ShowInformation("提示", "没有可上传的项目。", ov.window)
+			ShowToast(ov.window, "没有可上传的项目。")
 		})
 		return
 	}
@@ -1959,7 +1946,7 @@ func (ov *ObjectsView) startDownloadProcess(localBasePath string) {
 
 	if len(filesToDownload) == 0 {
 		fyne.Do(func() {
-			dialog.ShowInformation("提示", "没有可下载的项目。", ov.window)
+			ShowToast(ov.window, "没有可下载的项目。")
 		})
 		return
 	}
@@ -2009,7 +1996,7 @@ func (ov *ObjectsView) startDownloadProcess(localBasePath string) {
 		if len(failedDownloads) > 0 {
 			dialog.ShowError(fmt.Errorf("部分项目下载失败: %s", strings.Join(failedDownloads, ", ")), ov.window)
 		} else {
-			dialog.ShowInformation("成功", "所有项目下载完成。", ov.window)
+			ShowToast(ov.window, "所有项目下载完成。")
 		}
 		ov.loadObjects()
 	})
@@ -2134,7 +2121,7 @@ func (ov *ObjectsView) downloadCopiedObjects(localBasePath string, objectsToDown
 
 	if len(filesToDownload) == 0 {
 		fyne.Do(func() {
-			dialog.ShowInformation("提示", "没有可下载的项目。", ov.window)
+			ShowToast(ov.window, "没有可下载的项目。")
 		})
 		return
 	}
@@ -2184,7 +2171,7 @@ func (ov *ObjectsView) downloadCopiedObjects(localBasePath string, objectsToDown
 		if len(failedDownloads) > 0 {
 			dialog.ShowError(fmt.Errorf("部分项目下载失败: %s", strings.Join(failedDownloads, ", ")), ov.window)
 		} else {
-			dialog.ShowInformation("成功", "所有项目已下载完成。", ov.window)
+			ShowToast(ov.window, "所有项目已下载完成。")
 		}
 	})
 }
@@ -2259,7 +2246,7 @@ func (ov *ObjectsView) pasteS3Objects(objectsToCopy []s3client.S3Object) {
 			}
 			dialog.ShowError(fmt.Errorf("部分对象复制失败 (%d/%d):\n%s", errorCount, len(objectsToCopy), strings.Join(errorMessages, "\n")), ov.window)
 		} else {
-			dialog.ShowInformation("复制完成", fmt.Sprintf("成功复制 %d 个对象。", successCount), ov.window)
+			ShowToast(ov.window, fmt.Sprintf("成功复制 %d 个对象。", successCount))
 		}
 
 		// 刷新对象列表
