@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time" // 导入 time 包用于动画
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -26,6 +27,7 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/nfnt/resize"
@@ -102,14 +104,18 @@ type ObjectsView struct {
 	mainContent         *fyne.Container
 	currentServiceAlias string
 
+	// 动画管理器
+	animationManager *AnimationManager
+
 	// OnViewModeChanged 是一个回调函数，当视图模式改变时触发
 	OnViewModeChanged func(alias, newMode string)
 }
 
 // NewObjectsView 创建并返回一个新的 ObjectsView 实例
-func NewObjectsView(w fyne.Window) *ObjectsView {
+func NewObjectsView(w fyne.Window, am *AnimationManager) *ObjectsView { // 修改函数签名
 	ov := &ObjectsView{
 		window:            w,
+		animationManager:  am, // 初始化动画管理器
 		selectedObjectIDs: make(map[widget.ListItemID]struct{}),
 		lastSelectedID:    -1,
 		loadingIndicator:  NewThinProgressBar(),
@@ -859,6 +865,22 @@ func (ov *ObjectsView) refreshObjectView() {
 		ov.mainContent.Objects = []fyne.CanvasObject{ov.createListView()}
 	}
 	ov.mainContent.Refresh()
+
+	// 添加淡入动画效果
+	if ov.animationManager != nil {
+		// 创建一个覆盖整个内容区域的半透明黑色矩形
+		fadeOverlay := canvas.NewRectangle(color.NRGBA{R: 0, G: 0, B: 0, A: 200}) // 初始为较暗
+		fadeOverlay.Resize(ov.mainContent.Size())
+		
+		// 将覆盖层添加到 mainContent 的顶部
+		ov.mainContent.Add(fadeOverlay)
+		
+		// 使用 AnimationManager 执行淡出动画（使覆盖层变透明，内容逐渐显现）
+		ov.animationManager.AnimateFade(fadeOverlay, time.Millisecond*300, 1.0, 0.0, func() {
+			// 动画结束后移除覆盖层
+			ov.mainContent.Remove(fadeOverlay)
+		})
+	}
 }
 
 // refreshSelection 在项目被选中/取消选中时调用。
@@ -987,17 +1009,26 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 	}
 
 	createFolderButton := widget.NewButtonWithIcon("", theme.FolderNewIcon(), func() {
+		// 动画结束后执行的逻辑
 		if ov.s3Client == nil || ov.currentBucket == "" {
 			dialog.ShowInformation("提示", "请先选择一个 S3 服务和存储桶。", ov.window)
 			return
 		}
 
-		entry := widget.NewEntry()
-		dialog.ShowForm("创建新文件夹", "创建", "取消", []*widget.FormItem{
-			widget.NewFormItem("文件夹名称", entry),
-		}, func(confirmed bool) {
+		// 创建自定义弹窗以更好地控制尺寸
+		folderNameEntry := widget.NewEntry()
+		folderNameEntry.SetPlaceHolder("请输入文件夹名称")
+		
+		formContent := container.NewVBox(
+			widget.NewLabel("文件夹名称:"),
+			folderNameEntry,
+			layout.NewSpacer(),
+		)
+		
+		// 创建自定义对话框
+		createFolderDialog := dialog.NewCustomConfirm("创建新文件夹", "创建", "取消", formContent, func(confirmed bool) {
 			if confirmed {
-				folderName := entry.Text
+				folderName := folderNameEntry.Text
 				if folderName == "" {
 					dialog.ShowInformation("提示", "文件夹名称不能为空。", ov.window)
 					return
@@ -1017,18 +1048,31 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 				}()
 			}
 		}, ov.window)
+		createFolderDialog.Resize(fyne.NewSize(400, 200)) // 增大弹窗尺寸
+		createFolderDialog.Show()
 	})
+	
+	// 为按钮添加点击动画
+	if ov.animationManager != nil {
+		originalCreateFolderButtonOnTapped := createFolderButton.OnTapped
+		createFolderButton.OnTapped = func() {
+			ov.animationManager.AnimateButtonClick(createFolderButton, func() {
+				if originalCreateFolderButtonOnTapped != nil {
+					originalCreateFolderButtonOnTapped()
+				}
+			})
+		}
+	}
 
 	uploadButton := widget.NewButtonWithIcon("", theme.UploadIcon(), func() {
+		// 动画结束后执行的逻辑
 		if ov.s3Client == nil || ov.currentBucket == "" {
 			dialog.ShowInformation("提示", "请先选择一个 S3 服务和存储桶。", ov.window)
 			return
 		}
 
-		var d dialog.Dialog
-
+		// 创建更美观的上传选项弹窗
 		fileUploadFunc := func() {
-			d.Hide()
 			fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
 				if err != nil {
 					dialog.ShowError(err, ov.window)
@@ -1040,11 +1084,11 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 				defer reader.Close()
 				go ov.startUploadProcess([]string{reader.URI().Path()})
 			}, ov.window)
+			fd.SetFilter(storage.NewExtensionFileFilter([]string{})) // 不限制文件类型
 			fd.Show()
 		}
 
 		folderUploadFunc := func() {
-			d.Hide()
 			dialog.ShowFolderOpen(func(uri fyne.ListableURI, err error) {
 				if err != nil {
 					dialog.ShowError(err, ov.window)
@@ -1057,37 +1101,64 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 			}, ov.window)
 		}
 
+		// 创建带图标的按钮，使界面更美观
 		fileBtn := widget.NewButtonWithIcon("上传文件", theme.FileIcon(), fileUploadFunc)
 		folderBtn := widget.NewButtonWithIcon("上传文件夹", theme.FolderIcon(), folderUploadFunc)
+		
+		// 设置按钮大小和样式
+		fileBtn.Importance = widget.HighImportance
+		folderBtn.Importance = widget.HighImportance
 
+		// 创建垂直布局的内容，增加间距
 		content := container.NewVBox(
-			widget.NewLabel("请选择要上传的类型："),
-			fileBtn,
-			folderBtn,
+			container.NewCenter(widget.NewLabelWithStyle("请选择上传类型", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})),
+			widget.NewSeparator(),
+			container.NewPadded(fileBtn),
+			container.NewPadded(folderBtn),
 		)
 
-		d = dialog.NewCustom("上传", "取消", content, ov.window)
-		d.Show()
+		// 创建自定义对话框并设置合适的尺寸
+		uploadDialog := dialog.NewCustom("上传文件", "取消", content, ov.window)
+		uploadDialog.Resize(fyne.NewSize(300, 200))
+		uploadDialog.Show()
 	})
+	
+	// 为按钮添加点击动画
+	if ov.animationManager != nil {
+		originalUploadButtonOnTapped := uploadButton.OnTapped
+		uploadButton.OnTapped = func() {
+			ov.animationManager.AnimateButtonClick(uploadButton, func() {
+				if originalUploadButtonOnTapped != nil {
+					originalUploadButtonOnTapped()
+				}
+			})
+		}
+	}
 
 	ov.downloadButton = widget.NewButtonWithIcon("", theme.DownloadIcon(), func() {
+		// 动画结束后执行的逻辑
 		if len(ov.selectedObjectIDs) == 0 {
 			dialog.ShowInformation("提示", "请至少选择一个要下载的项目。", ov.window)
 			return
 		}
 
-		dialog.ShowFolderOpen(func(uri fyne.ListableURI, err error) {
-			if err != nil {
-				dialog.ShowError(err, ov.window)
-				return
-			}
-			if uri == nil {
-				return
-			}
-			go ov.startDownloadProcess(uri.Path())
-		}, ov.window)
+		// 使用系统文件管理器选择下载目录
+		go ov.openSystemFolderSelector()
 	})
+	
+	// 为按钮添加点击动画
+	if ov.animationManager != nil {
+		originalDownloadButtonOnTapped := ov.downloadButton.OnTapped
+		ov.downloadButton.OnTapped = func() {
+			ov.animationManager.AnimateButtonClick(ov.downloadButton, func() {
+				if originalDownloadButtonOnTapped != nil {
+					originalDownloadButtonOnTapped()
+				}
+			})
+		}
+	}
 	ov.deleteButton = widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {
+		// 动画结束后执行的逻辑
 		selectedCount := len(ov.selectedObjectIDs)
 		if selectedCount == 0 {
 			dialog.ShowInformation("提示", "请先选择要删除的文件或文件夹。", ov.window)
@@ -1228,9 +1299,22 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 			}
 		}, ov.window)
 	})
+	
+	// 为按钮添加点击动画
+	if ov.animationManager != nil {
+		originalDeleteButtonOnTapped := ov.deleteButton.OnTapped
+		ov.deleteButton.OnTapped = func() {
+			ov.animationManager.AnimateButtonClick(ov.deleteButton, func() {
+				if originalDeleteButtonOnTapped != nil {
+					originalDeleteButtonOnTapped()
+				}
+			})
+		}
+	}
 	ov.updateButtonsState()
 
 	ov.viewSwitchButton = widget.NewButtonWithIcon("", theme.GridIcon(), func() {
+		// 动画结束后执行的逻辑
 		if ov.viewMode == listViewMode {
 			ov.viewMode = gridViewMode
 			ov.viewSwitchButton.SetIcon(theme.ListIcon())
@@ -1246,6 +1330,18 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 
 		ov.refreshObjectView()
 	})
+	
+	// 为按钮添加点击动画
+	if ov.animationManager != nil {
+		originalViewSwitchButtonOnTapped := ov.viewSwitchButton.OnTapped
+		ov.viewSwitchButton.OnTapped = func() {
+			ov.animationManager.AnimateButtonClick(ov.viewSwitchButton, func() {
+				if originalViewSwitchButtonOnTapped != nil {
+					originalViewSwitchButtonOnTapped()
+				}
+			})
+		}
+	}
 
 	fileOpsButtons := container.NewHBox(createFolderButton, uploadButton, ov.downloadButton, ov.deleteButton, ov.viewSwitchButton)
 
@@ -1253,17 +1349,44 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 
 	// --- 分页控件 ---
 	ov.prevButton = widget.NewButtonWithIcon("", theme.NavigateBackIcon(), func() {
+		// 动画结束后执行的逻辑
 		if ov.currentPage > 1 {
 			ov.currentPage--
 			ov.loadObjects()
 		}
 	})
+	
+	// 为按钮添加点击动画
+	if ov.animationManager != nil {
+		originalPrevButtonOnTapped := ov.prevButton.OnTapped
+		ov.prevButton.OnTapped = func() {
+			ov.animationManager.AnimateButtonClick(ov.prevButton, func() {
+				if originalPrevButtonOnTapped != nil {
+					originalPrevButtonOnTapped()
+				}
+			})
+		}
+	}
+	
 	ov.nextButton = widget.NewButtonWithIcon("", theme.NavigateNextIcon(), func() {
+		// 动画结束后执行的逻辑
 		if ov.nextPageMarker != nil {
 			ov.currentPage++
 			ov.loadObjects()
 		}
 	})
+	
+	// 为按钮添加点击动画
+	if ov.animationManager != nil {
+		originalNextButtonOnTapped := ov.nextButton.OnTapped
+		ov.nextButton.OnTapped = func() {
+			ov.animationManager.AnimateButtonClick(ov.nextButton, func() {
+				if originalNextButtonOnTapped != nil {
+					originalNextButtonOnTapped()
+				}
+			})
+		}
+	}
 	ov.pageInfoLabel = widget.NewLabel("")
 	ov.pageSizeEntry = newMinWidthEntry(80)
 	ov.pageSizeEntry.SetText(strconv.Itoa(ov.pageSize))
@@ -1629,20 +1752,20 @@ func (ov *ObjectsView) startDownloadProcess(localBasePath string) {
 	})
 }
 
-// processDownloadItem 处理单个项目（文件或文件夹）的下载
-func (ov *ObjectsView) processDownloadItem(obj s3client.S3Object, localBasePath string, failedDownloads *[]string, mu *sync.Mutex, totalDownloadSize int64, bytesDownloaded *int64, downloadProgressDialog *dialog.ProgressDialog) {
-	if obj.IsFolder {
-		ov.downloadFolder(obj, localBasePath, failedDownloads, mu, totalDownloadSize, bytesDownloaded, downloadProgressDialog)
-	} else {
-		// 对于单个文件，错误会直接从 downloadFile 返回
-		err := ov.downloadFile(obj, localBasePath, totalDownloadSize, bytesDownloaded, downloadProgressDialog)
+// openSystemFolderSelector 打开系统文件管理器让用户选择下载目录
+func (ov *ObjectsView) openSystemFolderSelector() {
+	// 使用系统对话框让用户选择下载目录
+	dialog.ShowFolderOpen(func(uri fyne.ListableURI, err error) {
 		if err != nil {
-			mu.Lock()
-			*failedDownloads = append(*failedDownloads, obj.Name)
-			mu.Unlock()
-			log.Printf("下载文件 '%s' 失败: %v", obj.Name, err)
+			dialog.ShowError(err, ov.window)
+			return
 		}
-	}
+		if uri == nil {
+			return
+		}
+		// 开始下载过程
+		go ov.startDownloadProcess(uri.Path())
+	}, ov.window)
 }
 
 // downloadFile 下载单个文件

@@ -73,16 +73,18 @@ type BucketsView struct {
 	selectedBucketID widget.ListItemID
 	deleteButton     *widget.Button
 	loadingIndicator *ThinProgressBar
+	animationManager *AnimationManager // 添加动画管理器
 
 	OnBucketSelected func(bucketName string)
 }
 
 // NewBucketsView 创建并返回一个新的 BucketsView 实例
-func NewBucketsView(w fyne.Window) *BucketsView {
+func NewBucketsView(w fyne.Window, am *AnimationManager) *BucketsView { // 修改函数签名
 	bv := &BucketsView{
 		window:           w,
 		selectedBucketID: -1,
 		loadingIndicator: NewThinProgressBar(),
+		animationManager: am, // 初始化动画管理器
 	}
 	bv.loadingIndicator.Hide()
 	return bv
@@ -206,16 +208,30 @@ func (bv *BucketsView) GetContent() fyne.CanvasObject {
 
 	// 创建存储桶按钮
 	createBucketButton := widget.NewButtonWithIcon("创建", theme.ContentAddIcon(), func() {
+		// 动画结束后执行的逻辑
 		if bv.S3Client == nil {
 			dialog.ShowInformation("提示", "请先选择一个 S3 服务。", bv.window)
 			return
 		}
-		entry := widget.NewEntry()
-		dialog.ShowForm("创建存储桶", "创建", "取消", []*widget.FormItem{
-			widget.NewFormItem("存储桶名称", entry),
-		}, func(confirmed bool) {
+		
+		// 创建自定义弹窗以更好地控制尺寸
+		bucketNameEntry := widget.NewEntry()
+		bucketNameEntry.SetPlaceHolder("请输入存储桶名称")
+		
+		// 创建一个更宽的输入框
+		wideEntry := container.NewPadded(bucketNameEntry)
+		wideEntry.Objects[0].(*widget.Entry).Wrapping = fyne.TextWrapOff
+		
+		formContent := container.NewVBox(
+			widget.NewLabel("存储桶名称:"),
+			bucketNameEntry,
+			layout.NewSpacer(),
+		)
+		
+		// 创建自定义对话框
+		createBucketDialog := dialog.NewCustomConfirm("创建存储桶", "创建", "取消", formContent, func(confirmed bool) {
 			if confirmed {
-				bucketName := entry.Text
+				bucketName := bucketNameEntry.Text
 				if bucketName == "" {
 					dialog.ShowInformation("提示", "存储桶名称不能为空。", bv.window)
 					return
@@ -233,10 +249,25 @@ func (bv *BucketsView) GetContent() fyne.CanvasObject {
 				}()
 			}
 		}, bv.window)
+		createBucketDialog.Resize(fyne.NewSize(400, 200)) // 增大弹窗尺寸
+		createBucketDialog.Show()
 	})
+	
+	// 为按钮添加点击动画
+	if bv.animationManager != nil {
+		originalCreateButtonOnTapped := createBucketButton.OnTapped
+		createBucketButton.OnTapped = func() {
+			bv.animationManager.AnimateButtonClick(createBucketButton, func() {
+				if originalCreateButtonOnTapped != nil {
+					originalCreateButtonOnTapped()
+				}
+			})
+		}
+	}
 
 	// 删除存储桶按钮
 	bv.deleteButton = widget.NewButtonWithIcon("删除", theme.DeleteIcon(), func() {
+		// 动画结束后执行的逻辑
 		if bv.S3Client == nil || bv.selectedBucketID == -1 || bv.selectedBucketID >= len(bv.buckets) {
 			dialog.ShowInformation("提示", "请先选择一个要删除的存储桶。", bv.window)
 			return
@@ -259,6 +290,18 @@ func (bv *BucketsView) GetContent() fyne.CanvasObject {
 			}
 		}, bv.window)
 	})
+	
+	// 为按钮添加点击动画
+	if bv.animationManager != nil {
+		originalDeleteButtonOnTapped := bv.deleteButton.OnTapped
+		bv.deleteButton.OnTapped = func() {
+			bv.animationManager.AnimateButtonClick(bv.deleteButton, func() {
+				if originalDeleteButtonOnTapped != nil {
+					originalDeleteButtonOnTapped()
+				}
+			})
+		}
+	}
 	bv.deleteButton.Disable()
 
 	buttonBox := container.NewHBox(

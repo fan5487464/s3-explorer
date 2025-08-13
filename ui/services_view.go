@@ -73,16 +73,18 @@ type ServicesView struct {
 	loadingIndicator  *ThinProgressBar
 	editButton        *widget.Button
 	deleteButton      *widget.Button
+	animationManager  *AnimationManager // 添加动画管理器
 
 	OnServiceSelected func(svc config.S3ServiceConfig)
 }
 
 // NewServicesView 创建并返回一个新的 ServicesView 实例
-func NewServicesView(w fyne.Window) *ServicesView {
+func NewServicesView(w fyne.Window, am *AnimationManager) *ServicesView { // 修改函数签名
 	sv := &ServicesView{
 		window:            w,
 		selectedServiceID: -1,
 		loadingIndicator:  NewThinProgressBar(),
+		animationManager:  am, // 初始化动画管理器
 	}
 	sv.loadingIndicator.Hide()
 	sv.loadConfig(nil)
@@ -237,6 +239,7 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 
 	// 添加服务按钮
 	addButton := widget.NewButtonWithIcon("", theme.ContentAddIcon(), func() {
+		// 动画结束后执行的逻辑
 		formContent, aliasEntry, endpointEntry, accessKeyEntry, secretKeyEntry, proxyEntry := sv.createServiceFormContent(nil)
 		d := dialog.NewCustomConfirm("添加 S3 服务", "添加", "取消", formContent, func(confirmed bool) {
 			if confirmed {
@@ -274,6 +277,18 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 		d.Resize(fyne.NewSize(400, 250))
 		d.Show()
 	})
+	
+	// 为按钮添加点击动画
+	if sv.animationManager != nil {
+		originalAddButtonOnTapped := addButton.OnTapped
+		addButton.OnTapped = func() {
+			sv.animationManager.AnimateButtonClick(addButton, func() {
+				if originalAddButtonOnTapped != nil {
+					originalAddButtonOnTapped()
+				}
+			})
+		}
+	}
 
 	// 编辑服务按钮
 	sv.editButton = widget.NewButtonWithIcon("", theme.DocumentCreateIcon(), func() {

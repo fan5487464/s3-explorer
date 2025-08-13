@@ -45,7 +45,7 @@ func (am *AnimationManager) AnimateFade(obj fyne.CanvasObject, duration time.Dur
 	if callback != nil {
 		go func() {
 			time.Sleep(duration)
-			callback()
+			fyne.Do(callback)
 		}()
 	}
 }
@@ -53,12 +53,18 @@ func (am *AnimationManager) AnimateFade(obj fyne.CanvasObject, duration time.Dur
 // AnimateScale 执行缩放动画
 func (am *AnimationManager) AnimateScale(obj fyne.CanvasObject, duration time.Duration, from, to float32, callback func()) {
 	originalSize := obj.Size()
+	originalPos := obj.Position()
 	animation := &fyne.Animation{
 		Duration: duration,
 		Tick: func(done float32) {
 			scale := from + (to-from)*done
-			newSize := fyne.NewSize(originalSize.Width*scale, originalSize.Height*scale)
-			obj.Resize(newSize)
+			newWidth := originalSize.Width * scale
+			newHeight := originalSize.Height * scale
+			// 保持中心点不变
+			newX := originalPos.X + (originalSize.Width-newWidth)/2
+			newY := originalPos.Y + (originalSize.Height-newHeight)/2
+			obj.Move(fyne.NewPos(newX, newY))
+			obj.Resize(fyne.NewSize(newWidth, newHeight))
 		},
 	}
 	animation.Start()
@@ -66,9 +72,21 @@ func (am *AnimationManager) AnimateScale(obj fyne.CanvasObject, duration time.Du
 	if callback != nil {
 		go func() {
 			time.Sleep(duration)
-			callback()
+			fyne.Do(callback)
 		}()
 	}
+}
+
+// AnimatePulse 执行脉冲动画 (快速缩小再恢复)
+func (am *AnimationManager) AnimatePulse(obj fyne.CanvasObject, callback func()) {
+	const pulseDuration = time.Millisecond * 100
+	am.AnimateScale(obj, pulseDuration/2, 1.0, 0.9, func() {
+		am.AnimateScale(obj, pulseDuration/2, 0.9, 1.0, func() {
+			if callback != nil {
+				fyne.Do(callback)
+			}
+		})
+	})
 }
 
 // AnimateSlide 执行滑动动画
@@ -86,7 +104,7 @@ func (am *AnimationManager) AnimateSlide(obj fyne.CanvasObject, duration time.Du
 	if callback != nil {
 		go func() {
 			time.Sleep(duration)
-			callback()
+			fyne.Do(callback)
 		}()
 	}
 }
@@ -127,4 +145,9 @@ func (am *AnimationManager) CreateBounceAnimation(obj fyne.CanvasObject, duratio
 		},
 		RepeatCount: fyne.AnimationRepeatForever,
 	}
+}
+
+// AnimateButtonClick 为按钮点击添加动画效果
+func (am *AnimationManager) AnimateButtonClick(button fyne.CanvasObject, callback func()) {
+	am.AnimatePulse(button, callback)
 }

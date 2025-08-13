@@ -133,10 +133,13 @@ func main() {
 	mainMenu := fyne.NewMainMenu(helpMenu, aboutMenu)
 	w.SetMainMenu(mainMenu)
 
-	// 创建 UI 视图实例
-	objectsView := ui.NewObjectsView(w)
-	bucketsView := ui.NewBucketsView(w)
-	servicesView := ui.NewServicesView(w)
+	// 创建动画管理器实例
+	animationManager := ui.NewAnimationManager(w)
+
+	// 创建 UI 视图实例，并传入动画管理器
+	objectsView := ui.NewObjectsView(w, animationManager) // 修改构造函数调用
+	bucketsView := ui.NewBucketsView(w, animationManager) // 修改构造函数调用
+	servicesView := ui.NewServicesView(w, animationManager) // 修改构造函数调用
 
 	// --- 设置视图间的交互回调 ---
 
