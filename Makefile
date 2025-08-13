@@ -38,17 +38,17 @@ all: build-windows build-linux build-macos
 build-windows:
 	@echo "为 Windows (amd64) 构建..."
 	@mkdir -p $(BUILD_DIR)
-	@GOOS=windows GOARCH=amd64 $(GO_BUILD) $(LDFLAGS_WINDOWS) -o $(BUILD_DIR)/$(APP_NAME).exe $(MAIN_GO)
+	@GOOS=windows GOARCH=amd64 $(GO_BUILD) $(LDFLAGS_WINDOWS) -o $(BUILD_DIR)/$(APP_NAME)-x64-windows.exe $(MAIN_GO)
 
 build-linux:
 	@echo "为 Linux (amd64) 构建..."
 	@mkdir -p $(BUILD_DIR)
-	@GOOS=linux GOARCH=amd64 $(GO_BUILD) -o $(BUILD_DIR)/$(APP_NAME)-linux $(MAIN_GO)
+	@GOOS=linux GOARCH=amd64 $(GO_BUILD) -o $(BUILD_DIR)/$(APP_NAME)-x64-linux $(MAIN_GO)
 
 build-macos:
 	@echo "为 macOS (amd64) 构建..."
 	@mkdir -p $(BUILD_DIR)
-	@GOOS=darwin GOARCH=amd64 $(GO_BUILD) -o $(BUILD_DIR)/$(APP_NAME)-macos $(MAIN_GO)
+	@GOOS=darwin GOARCH=amd64 $(GO_BUILD) -o $(BUILD_DIR)/$(APP_NAME)-x64-macos $(MAIN_GO)
 
 # --- 清理任务 ---
 
