@@ -15,6 +15,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"s3-explorer/s3client"
+	"s3-explorer/ui/components"
 )
 
 // bucketListEntry 是存储桶列表的自定义列表项
@@ -78,6 +79,20 @@ type BucketsView struct {
 	bucketContainer  *fyne.Container   // 添加存储桶容器引用
 
 	OnBucketSelected func(bucketName string)
+}
+
+
+
+// unselectAllBuckets clears the selection in the bucket list.
+func (bv *BucketsView) unselectAllBuckets() {
+	if bv.selectedBucketID != -1 {
+		bv.selectedBucketID = -1
+		bv.bucketList.Refresh()
+		bv.checkDeleteButtonState()
+		if bv.OnBucketSelected != nil {
+			bv.OnBucketSelected("") // Clear the object list
+		}
+	}
 }
 
 // NewBucketsView 创建并返回一个新的 BucketsView 实例
@@ -338,7 +353,8 @@ func (bv *BucketsView) GetContent() fyne.CanvasObject {
 	topContent := container.NewVBox(buttonBox, bv.loadingIndicator, widget.NewSeparator())
 
 	// bucketContainer 现在只包含列表本身，以便动画可以引用它
-	bv.bucketContainer = container.NewMax(bv.bucketList)
+	tappableList := components.NewTappableContainer(bv.bucketList, bv.unselectAllBuckets)
+	bv.bucketContainer = container.NewMax(tappableList)
 
 	return container.NewBorder(topContent, nil, nil, nil, bv.bucketContainer)
 }
