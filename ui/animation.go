@@ -68,7 +68,21 @@ func (am *AnimationManager) AnimateScale(obj fyne.CanvasObject, duration time.Du
 	if callback != nil {
 		go func() {
 			time.Sleep(duration)
-			fyne.Do(callback)
+			fyne.Do(func() {
+				// 动画结束后恢复到原始位置和大小
+				obj.Move(originalPos)
+				obj.Resize(originalSize)
+				callback()
+			})
+		}()
+	} else {
+		// 即使没有回调函数，也要确保动画结束后恢复到原始状态
+		go func() {
+			time.Sleep(duration)
+			fyne.Do(func() {
+				obj.Move(originalPos)
+				obj.Resize(originalSize)
+			})
 		}()
 	}
 }
