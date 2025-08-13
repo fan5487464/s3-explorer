@@ -28,14 +28,10 @@ func (am *AnimationManager) AnimateFade(obj fyne.CanvasObject, duration time.Dur
 		Tick: func(done float32) {
 			alpha := from + (to-from)*done
 			if c, ok := obj.(*canvas.Rectangle); ok {
-				// 使用类型断言获取具体的颜色类型并修改Alpha值
-				if rgba, ok := c.FillColor.(color.RGBA); ok {
-					rgba.A = uint8(alpha * 255)
-					c.FillColor = rgba
-				} else if nrgba, ok := c.FillColor.(color.NRGBA); ok {
-					nrgba.A = uint8(alpha * 255)
-					c.FillColor = nrgba
-				}
+				// 使用更平滑的透明度过渡
+				alphaValue := uint8(alpha * 255)
+				// 使用柔和的灰色而不是纯黑色
+				c.FillColor = color.NRGBA{R: 200, G: 200, B: 200, A: alphaValue}
 				c.Refresh()
 			}
 		},
@@ -79,7 +75,7 @@ func (am *AnimationManager) AnimateScale(obj fyne.CanvasObject, duration time.Du
 
 // AnimatePulse 执行脉冲动画 (快速缩小再恢复)
 func (am *AnimationManager) AnimatePulse(obj fyne.CanvasObject, callback func()) {
-	const pulseDuration = time.Millisecond * 100
+	const pulseDuration = time.Millisecond * 150
 	am.AnimateScale(obj, pulseDuration/2, 1.0, 0.9, func() {
 		am.AnimateScale(obj, pulseDuration/2, 0.9, 1.0, func() {
 			if callback != nil {
@@ -149,5 +145,11 @@ func (am *AnimationManager) CreateBounceAnimation(obj fyne.CanvasObject, duratio
 
 // AnimateButtonClick 为按钮点击添加动画效果
 func (am *AnimationManager) AnimateButtonClick(button fyne.CanvasObject, callback func()) {
-	am.AnimatePulse(button, callback)
+	// 使用简单的脉冲动画
+	am.AnimatePulse(button, func() {
+		// 动画结束后执行回调
+		if callback != nil {
+			fyne.Do(callback)
+		}
+	})
 }

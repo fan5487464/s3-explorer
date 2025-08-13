@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"log"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -74,6 +75,7 @@ type BucketsView struct {
 	deleteButton     *widget.Button
 	loadingIndicator *ThinProgressBar
 	animationManager *AnimationManager // 添加动画管理器
+	bucketContainer  *fyne.Container   // 添加存储桶容器引用
 
 	OnBucketSelected func(bucketName string)
 }
@@ -150,6 +152,26 @@ func (bv *BucketsView) refreshBucketList() {
 		return
 	}
 	bv.bucketList.Refresh()
+
+	// 添加淡入动画效果
+	if bv.animationManager != nil && bv.bucketContainer != nil {
+		// 创建一个覆盖整个内容区域的半透明渐变矩形
+		// 使用更柔和的颜色和更好的透明度
+		fadeOverlay := canvas.NewRectangle(color.NRGBA{R: 200, G: 200, B: 200, A: 150}) // 柔和的灰色半透明
+		fadeOverlay.Resize(bv.bucketContainer.Size())
+
+		// 将覆盖层添加到 bucketContainer 的顶部
+		bv.bucketContainer.Add(fadeOverlay)
+
+		// 使用 AnimationManager 执行淡出动画（使覆盖层变透明，内容逐渐显现）
+		// 增加动画时间使其更平滑
+		bv.animationManager.AnimateFade(fadeOverlay, time.Millisecond*500, 1.0, 0.0, func() {
+			// 动画结束后移除覆盖层
+			if bv.bucketContainer != nil {
+				bv.bucketContainer.Remove(fadeOverlay)
+			}
+		})
+	}
 }
 
 // checkDeleteButtonState 检查并设置删除按钮的启用状态
@@ -319,8 +341,8 @@ func (bv *BucketsView) GetContent() fyne.CanvasObject {
 	clippedProgressBar.SetMinSize(fyne.NewSize(0, bv.loadingIndicator.MinSize().Height)) // 确保它占用最小高度
 
 	// 将列表和加载指示器放入一个堆栈容器中，并手动定位加载指示器在顶部
-	listContainer := container.NewStack(bv.bucketList, clippedProgressBar)
+	bv.bucketContainer = container.NewStack(bv.bucketList, clippedProgressBar)
 	clippedProgressBar.Move(fyne.NewPos(0, 0)) // 手动定位到顶部
 
-	return container.NewBorder(topContent, nil, nil, nil, listContainer)
+	return container.NewBorder(topContent, nil, nil, nil, bv.bucketContainer)
 }

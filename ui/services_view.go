@@ -339,6 +339,18 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 		d.Resize(fyne.NewSize(400, 250))
 		d.Show()
 	})
+	
+	// 为按钮添加点击动画
+	if sv.animationManager != nil {
+		originalEditButtonOnTapped := sv.editButton.OnTapped
+		sv.editButton.OnTapped = func() {
+			sv.animationManager.AnimateButtonClick(sv.editButton, func() {
+				if originalEditButtonOnTapped != nil {
+					originalEditButtonOnTapped()
+				}
+			})
+		}
+	}
 
 	// 删除服务按钮
 	sv.deleteButton = widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {
@@ -366,6 +378,18 @@ func (sv *ServicesView) GetContent() fyne.CanvasObject {
 			}
 		}, sv.window)
 	})
+	
+	// 为按钮添加点击动画
+	if sv.animationManager != nil {
+		originalDeleteButtonOnTapped := sv.deleteButton.OnTapped
+		sv.deleteButton.OnTapped = func() {
+			sv.animationManager.AnimateButtonClick(sv.deleteButton, func() {
+				if originalDeleteButtonOnTapped != nil {
+					originalDeleteButtonOnTapped()
+				}
+			})
+		}
+	}
 
 	sv.updateButtonsState()
 

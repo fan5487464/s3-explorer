@@ -868,15 +868,17 @@ func (ov *ObjectsView) refreshObjectView() {
 
 	// 添加淡入动画效果
 	if ov.animationManager != nil {
-		// 创建一个覆盖整个内容区域的半透明黑色矩形
-		fadeOverlay := canvas.NewRectangle(color.NRGBA{R: 0, G: 0, B: 0, A: 200}) // 初始为较暗
+		// 创建一个覆盖整个内容区域的半透明渐变矩形
+		// 使用更柔和的颜色和更好的透明度
+		fadeOverlay := canvas.NewRectangle(color.NRGBA{R: 200, G: 200, B: 200, A: 150}) // 柔和的灰色半透明
 		fadeOverlay.Resize(ov.mainContent.Size())
 		
 		// 将覆盖层添加到 mainContent 的顶部
 		ov.mainContent.Add(fadeOverlay)
 		
 		// 使用 AnimationManager 执行淡出动画（使覆盖层变透明，内容逐渐显现）
-		ov.animationManager.AnimateFade(fadeOverlay, time.Millisecond*300, 1.0, 0.0, func() {
+		// 增加动画时间使其更平滑
+		ov.animationManager.AnimateFade(fadeOverlay, time.Millisecond*500, 1.0, 0.0, func() {
 			// 动画结束后移除覆盖层
 			ov.mainContent.Remove(fadeOverlay)
 		})
