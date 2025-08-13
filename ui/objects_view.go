@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,6 +41,15 @@ import (
 var (
 	thumbnailCache = make(map[string]fyne.Resource)
 	cacheLock      = sync.RWMutex{}
+	
+	// 用于存储复制的对象信息
+	copiedObjects     []s3client.S3Object
+	copiedObjectsLock = sync.RWMutex{}
+	
+	// 用于跟踪最后一次复制操作的时间和类型
+	lastCopyTime     time.Time
+	lastCopyType     string // "s3" 或 "system"
+	copyTimeLock     = sync.RWMutex{}
 )
 
 const (
@@ -131,6 +141,15 @@ func NewObjectsView(w fyne.Window, am *AnimationManager) *ObjectsView { // 修�
 
 	ov.window.SetOnDropped(func(_ fyne.Position, uris []fyne.URI) {
 		ov.handleDrop(uris)
+	})
+
+	// 注册键盘快捷键处理
+	ov.window.Canvas().AddShortcut(&fyne.ShortcutCopy{}, func(shortcut fyne.Shortcut) {
+		ov.handleCopy()
+	})
+
+	ov.window.Canvas().AddShortcut(&fyne.ShortcutPaste{}, func(shortcut fyne.Shortcut) {
+		ov.handlePaste()
 	})
 
 	return ov
@@ -612,6 +631,196 @@ func (ov *ObjectsView) unselectAllObjects() {
 	}
 }
 
+// handleCopy 处理复制操作，将选中的对象信息保存到应用内部
+func (ov *ObjectsView) handleCopy() {
+	if len(ov.selectedObjectIDs) == 0 {
+		return
+	}
+
+	// 创建要复制的内容（对象信息列表）
+	var objectsToCopy []s3client.S3Object
+	items := ov.getDisplayedObjects()
+
+	for id := range ov.selectedObjectIDs {
+		if id < len(items) {
+			objectsToCopy = append(objectsToCopy, items[id])
+		}
+	}
+
+	if len(objectsToCopy) > 0 {
+		// 保存复制的对象信息到全局变量
+		copiedObjectsLock.Lock()
+		copiedObjects = objectsToCopy
+		copiedObjectsLock.Unlock()
+
+		// 记录复制操作的时间和类型
+		copyTimeLock.Lock()
+		lastCopyTime = time.Now()
+		lastCopyType = "s3"
+		copyTimeLock.Unlock()
+
+		// 显示提示信息
+		if len(objectsToCopy) == 1 {
+			dialog.ShowInformation("复制成功", fmt.Sprintf("已将 \"%s\" 添加到复制列表。", objectsToCopy[0].Name), ov.window)
+		} else {
+			dialog.ShowInformation("复制成功", fmt.Sprintf("已将 %d 个项目添加到复制列表。", len(objectsToCopy)), ov.window)
+		}
+	}
+}
+
+// handlePaste 处理粘贴操作，从剪贴板获取内容并执行相应操作
+func (ov *ObjectsView) handlePaste() {
+	if ov.s3Client == nil || ov.currentBucket == "" {
+		dialog.ShowInformation("提示", "请先选择一个 S3 服务和存储桶。", ov.window)
+		return
+	}
+
+	// 首先尝试从Windows HDROP格式读取文件路径
+	filePaths, err := getFilePathsFromClipboard()
+	if err != nil {
+		log.Printf("从Windows剪贴板读取文件路径时出错: %v", err)
+	}
+	
+	// 如果Windows HDROP读取失败或没有文件路径，尝试使用Fyne的剪贴板API
+	if len(filePaths) == 0 {
+		// 从剪贴板获取内容
+		content := ov.window.Clipboard().Content()
+		if content != "" {
+			log.Printf("粘贴操作: 剪贴板内容长度=%d", len(content))
+			log.Printf("剪贴板内容 (前1000字符): %s", func() string {
+				if len(content) > 1000 {
+					return content[:1000] + "...(truncated)"
+				}
+				return content
+			}())
+
+			// 解析文件路径 - 支持多种格式
+			
+			// 方法1: 处理 file:// URL格式 (Windows/Linux/Mac)
+			if strings.Contains(content, "file://") {
+				log.Printf("检测到 file:// 格式的内容")
+				lines := strings.Split(content, "\n")
+				for _, line := range lines {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "file://") {
+						log.Printf("处理行: %s", line)
+						// 移除 file:// 前缀并解码URL
+						path := strings.TrimPrefix(line, "file://")
+						// 处理Windows路径 (file:///C:/path -> C:\path)
+						if len(path) > 2 && path[0] == '/' && path[2] == ':' {
+							path = path[1:] // 移除开头的斜杠
+						}
+						decodedPath, err := url.QueryUnescape(path)
+						if err != nil {
+							// 如果解码失败，直接使用原始路径
+							decodedPath = path
+							log.Printf("URL解码失败，使用原始路径: %s", path)
+						}
+						filePaths = append(filePaths, decodedPath)
+						log.Printf("解析到文件路径 (file://): %s", decodedPath)
+					}
+				}
+			}
+			
+			// 方法2: 处理纯文本路径格式 (Windows)
+			if len(filePaths) == 0 {
+				log.Printf("未检测到 file:// 格式，尝试处理纯文本路径")
+				lines := strings.Split(content, "\n")
+				for _, line := range lines {
+					line = strings.TrimSpace(line)
+					log.Printf("处理行: '%s'", line)
+					// 检查是否为有效的Windows文件路径 (C:\path 或 D:\path 等)
+					if len(line) > 3 && line[1] == ':' && (line[2] == '\\' || line[2] == '/') {
+						filePaths = append(filePaths, line)
+						log.Printf("解析到Windows文件路径: %s", line)
+					}
+				}
+			}
+			
+			// 方法3: 处理Unix路径格式
+			if len(filePaths) == 0 {
+				lines := strings.Split(content, "\n")
+				for _, line := range lines {
+					line = strings.TrimSpace(line)
+					log.Printf("处理Unix路径行: '%s'", line)
+					// 检查是否为有效的Unix文件路径 (/path)
+					if len(line) > 1 && line[0] == '/' {
+						filePaths = append(filePaths, line)
+						log.Printf("解析到Unix文件路径: %s", line)
+					}
+				}
+			}
+			
+			// 方法4: 简单处理 - 将整个剪贴板内容作为单个路径 (如果它看起来像一个路径)
+			if len(filePaths) == 0 {
+				content = strings.TrimSpace(content)
+				log.Printf("尝试将整个剪贴板内容作为路径: '%s'", content)
+				// 检查是否为有效的文件路径
+				if (len(content) > 3 && content[1] == ':' && (content[2] == '\\' || content[2] == '/')) || // Windows路径
+				   (len(content) > 1 && content[0] == '/') { // Unix路径
+					filePaths = append(filePaths, content)
+					log.Printf("将整个剪贴板内容作为文件路径: %s", content)
+				}
+			}
+		}
+	}
+	
+	// 检查是否有从S3复制的对象
+	copiedObjectsLock.RLock()
+	localCopiedObjects := make([]s3client.S3Object, len(copiedObjects))
+	copy(localCopiedObjects, copiedObjects)
+	hasCopiedObjects := len(copiedObjects) > 0
+	copiedObjectsLock.RUnlock()
+	
+	// 获取最后一次复制操作的信息
+	copyTimeLock.RLock()
+	lastCopy := lastCopyTime
+	copyType := lastCopyType
+	copyTimeLock.RUnlock()
+	
+	// 判断应该使用哪种复制内容
+	useSystemClipboard := len(filePaths) > 0
+	useS3Objects := hasCopiedObjects
+	
+	// 如果两种复制内容都存在，比较时间以确定使用哪个
+	if useSystemClipboard && useS3Objects {
+		// 检查系统剪贴板内容是否是最新的（通过检查内容是否在最近1秒内发生变化）
+		// 这是一个简单的启发式方法，因为我们无法直接获取系统剪贴板的更改时间
+		systemClipboardTime := time.Now() // 假设系统剪贴板内容是最新的
+		
+		// 如果S3复制时间晚于系统剪贴板时间，则使用S3对象
+		if lastCopy.After(systemClipboardTime.Add(-1 * time.Second)) && copyType == "s3" {
+			useSystemClipboard = false
+		} else {
+			// 否则使用系统剪贴板（默认行为）
+			useS3Objects = false
+		}
+	}
+	
+	// 如果从系统剪贴板获取到了文件路径，则上传这些文件
+	if useSystemClipboard {
+		log.Printf("开始上传 %d 个文件: %v", len(filePaths), filePaths)
+		// 开始上传过程
+		go ov.startUploadProcess(filePaths)
+		return
+	}
+	
+	// 如果有从S3复制的对象，执行S3到S3的复制
+	if useS3Objects {
+		dialog.ShowConfirm("确认粘贴", fmt.Sprintf("是否要粘贴 %d 个已复制的对象到当前目录？", len(localCopiedObjects)), 
+			func(confirmed bool) {
+				if confirmed {
+					go ov.pasteS3Objects(localCopiedObjects)
+				}
+			}, ov.window)
+		return
+	}
+	
+	// 无法识别剪贴板内容格式
+	log.Printf("无法识别剪贴板内容格式")
+	dialog.ShowInformation("提示", "剪贴板中没有可识别的文件路径。", ov.window)
+}
+
 // updateButtonsState 根据当前选择状态更新按钮的可用性
 func (ov *ObjectsView) updateButtonsState() {
 	if ov.downloadButton == nil || ov.deleteButton == nil {
@@ -872,10 +1081,10 @@ func (ov *ObjectsView) refreshObjectView() {
 		// 使用更柔和的颜色和更好的透明度
 		fadeOverlay := canvas.NewRectangle(color.NRGBA{R: 200, G: 200, B: 200, A: 150}) // 柔和的灰色半透明
 		fadeOverlay.Resize(ov.mainContent.Size())
-		
+
 		// 将覆盖层添加到 mainContent 的顶部
 		ov.mainContent.Add(fadeOverlay)
-		
+
 		// 使用 AnimationManager 执行淡出动画（使覆盖层变透明，内容逐渐显现）
 		// 增加动画时间使其更平滑
 		ov.animationManager.AnimateFade(fadeOverlay, time.Millisecond*500, 1.0, 0.0, func() {
@@ -1020,13 +1229,13 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 		// 创建自定义弹窗以更好地控制尺寸
 		folderNameEntry := widget.NewEntry()
 		folderNameEntry.SetPlaceHolder("请输入文件夹名称")
-		
+
 		formContent := container.NewVBox(
 			widget.NewLabel("文件夹名称:"),
 			folderNameEntry,
 			layout.NewSpacer(),
 		)
-		
+
 		// 创建自定义对话框
 		createFolderDialog := dialog.NewCustomConfirm("创建新文件夹", "创建", "取消", formContent, func(confirmed bool) {
 			if confirmed {
@@ -1053,7 +1262,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 		createFolderDialog.Resize(fyne.NewSize(400, 200)) // 增大弹窗尺寸
 		createFolderDialog.Show()
 	})
-	
+
 	// 为按钮添加点击动画
 	if ov.animationManager != nil {
 		originalCreateFolderButtonOnTapped := createFolderButton.OnTapped
@@ -1106,7 +1315,21 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 		// 创建带图标的按钮，使界面更美观
 		fileBtn := widget.NewButtonWithIcon("上传文件", theme.FileIcon(), fileUploadFunc)
 		folderBtn := widget.NewButtonWithIcon("上传文件夹", theme.FolderIcon(), folderUploadFunc)
-		
+
+		// 添加调试按钮
+		debugBtn := widget.NewButton("调试: 检查剪贴板", func() {
+			content := ov.window.Clipboard().Content()
+			log.Printf("调试 - 剪贴板内容长度: %d", len(content))
+			if len(content) > 1000 {
+				log.Printf("调试 - 剪贴板内容 (前1000字符): %s", content[:1000])
+			} else {
+				log.Printf("调试 - 剪贴板内容: %s", content)
+			}
+
+			// 显示对话框
+			dialog.ShowInformation("剪贴板内容", fmt.Sprintf("长度: %d\n内容: %s", len(content), content), ov.window)
+		})
+
 		// 设置按钮大小和样式
 		fileBtn.Importance = widget.HighImportance
 		folderBtn.Importance = widget.HighImportance
@@ -1117,14 +1340,16 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 			widget.NewSeparator(),
 			container.NewPadded(fileBtn),
 			container.NewPadded(folderBtn),
+			widget.NewSeparator(),
+			container.NewPadded(debugBtn), // 添加调试按钮
 		)
 
 		// 创建自定义对话框并设置合适的尺寸
 		uploadDialog := dialog.NewCustom("上传文件", "取消", content, ov.window)
-		uploadDialog.Resize(fyne.NewSize(300, 200))
+		uploadDialog.Resize(fyne.NewSize(300, 250)) // 增加高度以容纳调试按钮
 		uploadDialog.Show()
 	})
-	
+
 	// 为按钮添加点击动画
 	if ov.animationManager != nil {
 		originalUploadButtonOnTapped := uploadButton.OnTapped
@@ -1147,7 +1372,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 		// 使用系统文件管理器选择下载目录
 		go ov.openSystemFolderSelector()
 	})
-	
+
 	// 为按钮添加点击动画
 	if ov.animationManager != nil {
 		originalDownloadButtonOnTapped := ov.downloadButton.OnTapped
@@ -1301,7 +1526,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 			}
 		}, ov.window)
 	})
-	
+
 	// 为按钮添加点击动画
 	if ov.animationManager != nil {
 		originalDeleteButtonOnTapped := ov.deleteButton.OnTapped
@@ -1332,7 +1557,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 
 		ov.refreshObjectView()
 	})
-	
+
 	// 为按钮添加点击动画
 	if ov.animationManager != nil {
 		originalViewSwitchButtonOnTapped := ov.viewSwitchButton.OnTapped
@@ -1357,7 +1582,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 			ov.loadObjects()
 		}
 	})
-	
+
 	// 为按钮添加点击动画
 	if ov.animationManager != nil {
 		originalPrevButtonOnTapped := ov.prevButton.OnTapped
@@ -1369,7 +1594,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 			})
 		}
 	}
-	
+
 	ov.nextButton = widget.NewButtonWithIcon("", theme.NavigateNextIcon(), func() {
 		// 动画结束后执行的逻辑
 		if ov.nextPageMarker != nil {
@@ -1377,7 +1602,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 			ov.loadObjects()
 		}
 	})
-	
+
 	// 为按钮添加点击动画
 	if ov.animationManager != nil {
 		originalNextButtonOnTapped := ov.nextButton.OnTapped
@@ -1422,19 +1647,37 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 	ov.mainContent = container.NewMax()
 	ov.refreshObjectView() // 初始视图
 
-	// 创建一个用于裁剪进度条的滚动容器
-	clippedProgressBar := container.NewScroll(ov.loadingIndicator)
-	clippedProgressBar.SetMinSize(fyne.NewSize(0, ov.loadingIndicator.MinSize().Height)) // 确保它占用最小高度
+	// 使用Border布局将进度条放置在主内容区域上方，以解决滚动问题
+	contentWithProgressBar := container.NewBorder(ov.loadingIndicator, nil, nil, nil, ov.mainContent)
 
-	// 将主内容区和裁剪后的加载指示器放入一个堆栈容器中
-	contentWithProgressBar := container.NewStack(ov.mainContent, clippedProgressBar)
-	clippedProgressBar.Move(fyne.NewPos(0, 0)) // 手动定位到顶部
+	return container.NewBorder(topBar, statusBar, nil, nil, contentWithProgressBar)
+}
 
-	centerContent := container.NewVBox(
-		widget.NewSeparator(),
-	)
+// findAvailableObjectKey 检查目标key是否存在，如果存在，则返回一个带递增数字的新key。
+func (ov *ObjectsView) findAvailableObjectKey(s3Key string) (string, error) {
+	// 1. Check if original key is available
+	exists, err := ov.s3Client.ObjectExists(ov.currentBucket, s3Key)
+	if err != nil {
+		return "", fmt.Errorf("检查对象 '%s' 是否存在时出错: %w", s3Key, err)
+	}
+	if !exists {
+		return s3Key, nil
+	}
 
-	return container.NewBorder(topBar, statusBar, nil, nil, centerContent, contentWithProgressBar)
+	// 2. If it exists, try with (n)
+	ext := filepath.Ext(s3Key)
+	keyWithoutExt := strings.TrimSuffix(s3Key, ext)
+
+	for i := 1; ; i++ {
+		newKey := fmt.Sprintf("%s(%d)%s", keyWithoutExt, i, ext)
+		exists, err := ov.s3Client.ObjectExists(ov.currentBucket, newKey)
+		if err != nil {
+			return "", fmt.Errorf("检查对象 '%s' 是否存在时出错: %w", newKey, err)
+		}
+		if !exists {
+			return newKey, nil
+		}
+	}
 }
 
 // startUploadProcess 启动上传流程 (文件或文件夹)
@@ -1470,7 +1713,16 @@ func (ov *ObjectsView) startUploadProcess(localPaths []string) {
 
 			if info.IsDir() {
 				baseFolderName := filepath.Base(path)
-				err := filepath.Walk(path, func(p string, i os.FileInfo, err error) error {
+
+				availableFolderName, err := ov.findAvailableFolderName(baseFolderName)
+				if err != nil {
+					scanMu.Lock()
+					scanErrors = append(scanErrors, fmt.Errorf("查找可用文件夹名称失败 '%s': %w", baseFolderName, err))
+					scanMu.Unlock()
+					return
+				}
+
+				err = filepath.Walk(path, func(p string, i os.FileInfo, err error) error {
 					if err != nil {
 						return err
 					}
@@ -1478,7 +1730,7 @@ func (ov *ObjectsView) startUploadProcess(localPaths []string) {
 					if err != nil {
 						return err
 					}
-					s3Key := filepath.Join(ov.currentPrefix, baseFolderName, relPath)
+					s3Key := filepath.Join(ov.currentPrefix, availableFolderName, relPath)
 					s3Key = strings.ReplaceAll(s3Key, string(os.PathSeparator), "/")
 
 					scanMu.Lock()
@@ -1503,12 +1755,21 @@ func (ov *ObjectsView) startUploadProcess(localPaths []string) {
 			} else {
 				fileName := filepath.Base(path)
 				s3Key := ov.currentPrefix + fileName
+
+				availableKey, err := ov.findAvailableObjectKey(s3Key)
+				if err != nil {
+					scanMu.Lock()
+					scanErrors = append(scanErrors, fmt.Errorf("查找可用对象key失败 '%s': %w", s3Key, err))
+					scanMu.Unlock()
+					return
+				}
+
 				scanMu.Lock()
 				filesToUpload = append(filesToUpload, struct {
 					LocalPath string
 					S3Key     string
 					Size      int64
-				}{LocalPath: path, S3Key: s3Key, Size: info.Size()})
+				}{LocalPath: path, S3Key: availableKey, Size: info.Size()})
 				totalSize += info.Size()
 				scanMu.Unlock()
 			}
@@ -1798,35 +2059,337 @@ func (ov *ObjectsView) downloadFile(obj s3client.S3Object, localPath string, tot
 	return nil
 }
 
-// downloadFolder 递归下载文件夹
-func (ov *ObjectsView) downloadFolder(folder s3client.S3Object, localBasePath string, failedDownloads *[]string, mu *sync.Mutex, totalDownloadSize int64, bytesDownloaded *int64, downloadProgressDialog *dialog.ProgressDialog) {
-	objectsToDownload, err := ov.s3Client.ListAllObjectsUnderPrefix(ov.currentBucket, folder.Key)
-	if err != nil {
-		log.Printf("列出文件夹 '%s' 内容失败: %v", folder.Name, err)
-		mu.Lock()
-		*failedDownloads = append(*failedDownloads, folder.Name)
-		mu.Unlock()
+// downloadCopiedObjects 下载复制的S3对象到本地目录
+func (ov *ObjectsView) downloadCopiedObjects(localBasePath string, objectsToDownload []s3client.S3Object) {
+	scanProgressDialog := dialog.NewProgressInfinite("正在准备下载", "正在计算下载大小...", ov.window)
+	scanProgressDialog.Show()
+
+	var totalDownloadSize int64
+	var filesToDownload []struct {
+		S3Object  s3client.S3Object
+		LocalPath string
+	}
+	var scanErrors []error
+	var scanWg sync.WaitGroup
+	var scanMu sync.Mutex
+
+	// 步骤 1: 扫描所有选中的项目以确定总大小和要下载的文件
+	numScanWorkers := 5 // 根据需要进行调整
+	objectChannel := make(chan s3client.S3Object, len(objectsToDownload))
+
+	for i := 0; i < numScanWorkers; i++ {
+		scanWg.Add(1)
+		go func() {
+			defer scanWg.Done()
+			for obj := range objectChannel {
+				if obj.IsFolder {
+					// 列出前缀下的所有对象以获取它们的大小
+					folderObjects, err := ov.s3Client.ListAllObjectsUnderPrefix(ov.currentBucket, obj.Key)
+					scanMu.Lock()
+					if err != nil {
+						scanErrors = append(scanErrors, fmt.Errorf("扫描文件夹 '%s' 失败: %w", obj.Name, err))
+					} else {
+						for _, fo := range folderObjects {
+							if !fo.IsFolder { // Only count files
+								totalDownloadSize += fo.Size
+								relativePath := strings.TrimPrefix(fo.Key, obj.Key)
+								localFilePath := filepath.Join(localBasePath, obj.Name, relativePath)
+								filesToDownload = append(filesToDownload, struct {
+									S3Object  s3client.S3Object
+									LocalPath string
+								}{S3Object: fo, LocalPath: localFilePath})
+							}
+						}
+					}
+					scanMu.Unlock()
+				} else {
+					scanMu.Lock()
+					totalDownloadSize += obj.Size
+					localFilePath := filepath.Join(localBasePath, obj.Name)
+					filesToDownload = append(filesToDownload, struct {
+						S3Object  s3client.S3Object
+						LocalPath string
+					}{S3Object: obj, LocalPath: localFilePath})
+					scanMu.Unlock()
+				}
+			}
+		}()
+	}
+
+	for _, obj := range objectsToDownload {
+		objectChannel <- obj
+	}
+	close(objectChannel)
+	scanWg.Wait()
+	fyne.Do(func() {
+		scanProgressDialog.Hide()
+	})
+
+	if len(scanErrors) > 0 {
+		fyne.Do(func() {
+			dialog.ShowError(fmt.Errorf("扫描部分项目失败: %s", scanErrors[0].Error()), ov.window)
+		})
 		return
 	}
 
+	if len(filesToDownload) == 0 {
+		fyne.Do(func() {
+			dialog.ShowInformation("提示", "没有可下载的项目。", ov.window)
+		})
+		return
+	}
+
+	// 步骤 2: 执行下载并显示进度条
+	downloadProgressDialog := dialog.NewProgress("正在下载", "正在下载项目...", ov.window)
+	downloadProgressDialog.Show()
+
+	var bytesDownloaded int64
+	var downloadWg sync.WaitGroup
+	var downloadMu sync.Mutex
+	var failedDownloads []string
+	numDownloadWorkers := 10
+
+	downloadChannel := make(chan struct {
+		S3Object  s3client.S3Object
+		LocalPath string
+	}, len(filesToDownload))
+
+	for i := 0; i < numDownloadWorkers; i++ {
+		downloadWg.Add(1)
+		go func() {
+			defer downloadWg.Done()
+			for fileInfo := range downloadChannel {
+				err := ov.downloadFile(fileInfo.S3Object, fileInfo.LocalPath, totalDownloadSize, &bytesDownloaded, downloadProgressDialog)
+				if err != nil {
+					downloadMu.Lock()
+					failedDownloads = append(failedDownloads, fileInfo.S3Object.Name)
+					downloadMu.Unlock()
+					log.Printf("下载文件 '%s' 失败: %v", fileInfo.S3Object.Name, err)
+				}
+			}
+		}()
+	}
+
+	for _, f := range filesToDownload {
+		downloadChannel <- f
+	}
+	close(downloadChannel)
+
+	downloadWg.Wait()
+	fyne.Do(func() {
+		downloadProgressDialog.Hide()
+	})
+
+	fyne.Do(func() {
+		if len(failedDownloads) > 0 {
+			dialog.ShowError(fmt.Errorf("部分项目下载失败: %s", strings.Join(failedDownloads, ", ")), ov.window)
+		} else {
+			dialog.ShowInformation("成功", "所有项目已下载完成。", ov.window)
+		}
+	})
+}
+
+// pasteS3Objects 在S3存储桶内复制对象
+func (ov *ObjectsView) pasteS3Objects(objectsToCopy []s3client.S3Object) {
+	if ov.s3Client == nil || ov.currentBucket == "" {
+		dialog.ShowError(fmt.Errorf("未选择S3服务或存储桶"), ov.window)
+		return
+	}
+
+	// 显示进度对话框
+	progressDialog := dialog.NewProgressInfinite("正在复制", "正在复制对象...", ov.window)
+	progressDialog.Show()
+
 	var wg sync.WaitGroup
-	for _, obj := range objectsToDownload {
+	var mu sync.Mutex
+	var errors []error
+	var successCount int
+
+	// 为每个对象启动一个goroutine进行复制
+	for _, obj := range objectsToCopy {
 		wg.Add(1)
-		go func(fileToDownload s3client.S3Object) {
+		go func(object s3client.S3Object) {
 			defer wg.Done()
-			relativePath := strings.TrimPrefix(fileToDownload.Key, folder.Key)
-			localPath := filepath.Join(localBasePath, folder.Name, relativePath)
-			// 传递所有与进度相关的参数
-			err := ov.downloadFile(fileToDownload, localPath, totalDownloadSize, bytesDownloaded, downloadProgressDialog)
-			if err != nil {
-				mu.Lock()
-				*failedDownloads = append(*failedDownloads, fileToDownload.Name)
-				mu.Unlock()
-				log.Printf("下载文件 '%s' 失败: %v", fileToDownload.Name, err)
+
+			if object.IsFolder {
+				// 处理文件夹复制
+				err := ov.copyFolderRecursive(object)
+				if err != nil {
+					mu.Lock()
+					errors = append(errors, fmt.Errorf("复制文件夹 '%s' 时出错: %v", object.Name, err))
+					mu.Unlock()
+				} else {
+					mu.Lock()
+					successCount++
+					mu.Unlock()
+				}
+			} else {
+				// 处理文件复制
+				err := ov.copySingleObject(object)
+				if err != nil {
+					mu.Lock()
+					errors = append(errors, fmt.Errorf("复制文件 '%s' 时出错: %v", object.Name, err))
+					mu.Unlock()
+				} else {
+					mu.Lock()
+					successCount++
+					mu.Unlock()
+				}
 			}
 		}(obj)
 	}
+
+	// 等待所有复制操作完成
 	wg.Wait()
+
+	// 关闭进度对话框
+	fyne.Do(func() {
+		progressDialog.Hide()
+
+		// 显示结果
+		mu.Lock()
+		errorCount := len(errors)
+		mu.Unlock()
+
+		if errorCount > 0 {
+			// 收集错误信息
+			errorMessages := make([]string, len(errors))
+			for i, err := range errors {
+				errorMessages[i] = err.Error()
+			}
+			dialog.ShowError(fmt.Errorf("部分对象复制失败 (%d/%d):\n%s", errorCount, len(objectsToCopy), strings.Join(errorMessages, "\n")), ov.window)
+		} else {
+			dialog.ShowInformation("复制完成", fmt.Sprintf("成功复制 %d 个对象。", successCount), ov.window)
+		}
+
+		// 刷新对象列表
+		ov.loadObjects()
+	})
+}
+
+// copySingleObject 复制单个文件对象
+func (ov *ObjectsView) copySingleObject(object s3client.S3Object) error {
+	// 生成目标对象键（在当前目录下）
+	originalName := object.Name
+	targetKey := ov.currentPrefix + originalName
+
+	log.Printf("准备复制文件: %s -> %s", object.Key, targetKey)
+
+	// 检查目标对象是否已存在，如果存在则生成新名称
+	newKey := targetKey
+	counter := 1
+	for {
+		// 检查对象是否存在
+		exists, err := ov.s3Client.ObjectExists(ov.currentBucket, newKey)
+		if err != nil {
+			return fmt.Errorf("检查对象 '%s' 是否存在时出错: %v", newKey, err)
+		}
+
+		if !exists {
+			break // 对象不存在，可以使用这个名称
+		}
+
+		// 对象已存在，生成新名称
+		ext := filepath.Ext(originalName)
+		nameWithoutExt := strings.TrimSuffix(originalName, ext)
+		newKey = ov.currentPrefix + fmt.Sprintf("%s(%d)%s", nameWithoutExt, counter, ext)
+		counter++
+
+		log.Printf("对象已存在，尝试新名称: %s", newKey)
+	}
+
+	// 执行复制操作
+	err := ov.s3Client.CopyObject(ov.currentBucket, object.Key, newKey)
+	if err != nil {
+		return fmt.Errorf("复制对象 '%s' 到 '%s' 时出错: %v", object.Key, newKey, err)
+	}
+
+	log.Printf("成功复制文件: %s -> %s", object.Key, newKey)
+	return nil
+}
+
+// findAvailableFolderName 检查目标前缀中是否存在同名文件夹，如果存在，则返回一个带递增数字的新名称。
+func (ov *ObjectsView) findAvailableFolderName(baseName string) (string, error) {
+	// 1. 检查原始名称是否可用
+	destKeyPrefix := ov.currentPrefix + baseName + "/"
+
+	// 使用 ListAllObjectsUnderPrefix 检查文件夹下是否有内容
+	objects, err := ov.s3Client.ListAllObjectsUnderPrefix(ov.currentBucket, destKeyPrefix)
+	if err != nil {
+		// 假设任何列出错误都意味着我们无法安全地确定存在性
+		return "", fmt.Errorf("检查文件夹 '%s' 是否存在时出错: %w", destKeyPrefix, err)
+	}
+
+	// 即使文件夹为空，它也可能作为一个0字节的对象存在
+	folderObjectExists, err := ov.s3Client.ObjectExists(ov.currentBucket, destKeyPrefix)
+	if err != nil {
+		return "", fmt.Errorf("检查文件夹对象 '%s' 是否存在时出错: %w", destKeyPrefix, err)
+	}
+
+	// 如果文件夹内没有对象并且文件夹本身的对象也不存在，则该名称可用
+	if len(objects) == 0 && !folderObjectExists {
+		return baseName, nil
+	}
+
+	// 2. 如果原始名称不可用，尝试 "baseName(n)"
+	for i := 1; ; i++ {
+		newName := fmt.Sprintf("%s(%d)", baseName, i)
+		destKeyPrefix = ov.currentPrefix + newName + "/"
+
+		objects, err := ov.s3Client.ListAllObjectsUnderPrefix(ov.currentBucket, destKeyPrefix)
+		if err != nil {
+			return "", fmt.Errorf("检查文件夹 '%s' 是否存在时出错: %w", destKeyPrefix, err)
+		}
+
+		folderObjectExists, err := ov.s3Client.ObjectExists(ov.currentBucket, destKeyPrefix)
+		if err != nil {
+			return "", fmt.Errorf("检查文件夹对象 '%s' 是否存在时出错: %w", destKeyPrefix, err)
+		}
+
+		if len(objects) == 0 && !folderObjectExists {
+			return newName, nil
+		}
+	}
+}
+
+// copyFolderRecursive 递归复制文件夹及其所有内容
+func (ov *ObjectsView) copyFolderRecursive(folder s3client.S3Object) error {
+	originalFolderName := strings.TrimSuffix(folder.Name, "/")
+
+	// 查找可用的文件夹名称
+	availableName, err := ov.findAvailableFolderName(originalFolderName)
+	if err != nil {
+		return fmt.Errorf("查找可用文件夹名称失败 for '%s': %w", originalFolderName, err)
+	}
+
+	newFolderKey := ov.currentPrefix + availableName + "/"
+	log.Printf("准备复制文件夹: %s -> %s", folder.Key, newFolderKey)
+
+	// 列出源文件夹中的所有对象
+	objects, err := ov.s3Client.ListAllObjectsUnderPrefix(ov.currentBucket, folder.Key)
+	if err != nil {
+		return fmt.Errorf("列出源文件夹 '%s' 内容时出错: %v", folder.Key, err)
+	}
+
+	// 复制每个对象到目标文件夹
+	for _, obj := range objects {
+		// 计算目标对象键
+		relativePath := strings.TrimPrefix(obj.Key, folder.Key)
+		targetKey := newFolderKey + relativePath
+
+		// 因为目标文件夹是全新的，所以我们直接复制，不检查是否存在。
+		// 这会保留源文件夹的结构。
+		err := ov.s3Client.CopyObject(ov.currentBucket, obj.Key, targetKey)
+		if err != nil {
+			// 如果单个对象复制失败，记录并继续尝试复制其他对象
+			log.Printf("复制对象 '%s' 到 '%s' 时出错: %v", obj.Key, targetKey, err)
+		} else {
+			log.Printf("成功复制对象: %s -> %s", obj.Key, targetKey)
+		}
+	}
+
+	log.Printf("成功复制文件夹: %s -> %s", folder.Key, newFolderKey)
+	return nil
 }
 
 // deleteFolderAndContents 递归删除文件夹及其所有内容

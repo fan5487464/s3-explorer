@@ -336,13 +336,8 @@ func (bv *BucketsView) GetContent() fyne.CanvasObject {
 
 	topContent := container.NewVBox(buttonBox, widget.NewSeparator())
 
-	// 创建一个用于裁剪进度条的滚动容器
-	clippedProgressBar := container.NewScroll(bv.loadingIndicator)
-	clippedProgressBar.SetMinSize(fyne.NewSize(0, bv.loadingIndicator.MinSize().Height)) // 确保它占用最小高度
-
-	// 将列表和加载指示器放入一个堆栈容器中，并手动定位加载指示器在顶部
-	bv.bucketContainer = container.NewStack(bv.bucketList, clippedProgressBar)
-	clippedProgressBar.Move(fyne.NewPos(0, 0)) // 手动定位到顶部
+	// 使用Border布局将进度条放置在列表上方，以解决滚动问题
+	bv.bucketContainer = container.NewBorder(bv.loadingIndicator, nil, nil, nil, bv.bucketList)
 
 	return container.NewBorder(topContent, nil, nil, nil, bv.bucketContainer)
 }

@@ -2,6 +2,7 @@ package s3client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io" // 导入 io 包
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	appConfig "s3-explorer/config" // 导入应用程序的配置包
 )
 
@@ -294,4 +296,57 @@ func (sc *S3Client) ListAllKeysUnderPrefix(bucketName, prefix string) ([]string,
 		}
 	}
 	return keys, nil
+}
+
+// CopyObject 在同一个存储桶内复制对象
+func (sc *S3Client) CopyObject(bucketName, sourceKey, targetKey string) error {
+	// 构建源对象的完整路径
+	source := fmt.Sprintf("%s/%s", bucketName, sourceKey)
+	
+	_, err := sc.client.CopyObject(context.TODO(), &s3.CopyObjectInput{
+		Bucket:     aws.String(bucketName),
+		CopySource: aws.String(source),
+		Key:        aws.String(targetKey),
+	})
+	
+	if err != nil {
+		return fmt.Errorf("复制对象失败: %w", err)
+	}
+	return nil
+}
+
+// ObjectExists 检查对象是否存在于存储桶中
+func (sc *S3Client) ObjectExists(bucketName, key string) (bool, error) {
+	// 如果键为空，直接返回false
+	if key == "" {
+		return false, nil
+	}
+	
+	_, err := sc.client.HeadObject(context.TODO(), &s3.HeadObjectInput{
+		Bucket: aws.String(bucketName),
+		Key:    aws.String(key),
+	})
+	
+	if err != nil {
+		// 检查是否是因为对象不存在导致的错误
+		var noSuchKey *s3types.NoSuchKey
+		if errors.As(err, &noSuchKey) {
+			return false, nil // 对象不存在，但不是错误
+		}
+		
+		// 检查是否包含404错误
+		if strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "NotFound") {
+			return false, nil // 对象不存在，但不是错误
+		}
+		
+		// 检查是否包含400错误
+		if strings.Contains(err.Error(), "400") || strings.Contains(err.Error(), "BadRequest") {
+			// 400错误通常意味着键格式不正确，我们也认为对象不存在
+			return false, nil
+		}
+		
+		return false, fmt.Errorf("检查对象是否存在时出错: %w", err)
+	}
+	
+	return true, nil // 对象存在
 }
