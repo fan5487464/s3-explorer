@@ -41,15 +41,15 @@ import (
 var (
 	thumbnailCache = make(map[string]fyne.Resource)
 	cacheLock      = sync.RWMutex{}
-	
+
 	// 用于存储复制的对象信息
 	copiedObjects     []s3client.S3Object
 	copiedObjectsLock = sync.RWMutex{}
-	
+
 	// 用于跟踪最后一次复制操作的时间和类型
-	lastCopyTime     time.Time
-	lastCopyType     string // "s3" 或 "system"
-	copyTimeLock     = sync.RWMutex{}
+	lastCopyTime time.Time
+	lastCopyType string // "s3" 或 "system"
+	copyTimeLock = sync.RWMutex{}
 )
 
 const (
@@ -131,7 +131,7 @@ func NewObjectsView(w fyne.Window, am *AnimationManager) *ObjectsView { // 修�
 		loadingIndicator:  NewThinProgressBar(),
 		serviceInfoButton: widget.NewButton("未选择服务", func() {}),
 		currentPage:       1,
-		pageSize:          0, // 0 表示不限制
+		pageSize:          200, // 0 表示不限制
 		pageMarkers:       []string{""},
 		viewMode:          listViewMode, // 默认是列表视图
 	}
@@ -696,7 +696,7 @@ func (ov *ObjectsView) handlePaste() {
 	if err != nil {
 		log.Printf("从Windows剪贴板读取文件路径时出错: %v", err)
 	}
-	
+
 	// 如果Windows HDROP读取失败或没有文件路径，尝试使用Fyne的剪贴板API
 	if len(filePaths) == 0 {
 		// 从剪贴板获取内容
@@ -711,7 +711,7 @@ func (ov *ObjectsView) handlePaste() {
 			}())
 
 			// 解析文件路径 - 支持多种格式
-			
+
 			// 方法1: 处理 file:// URL格式 (Windows/Linux/Mac)
 			if strings.Contains(content, "file://") {
 				log.Printf("检测到 file:// 格式的内容")
@@ -737,7 +737,7 @@ func (ov *ObjectsView) handlePaste() {
 					}
 				}
 			}
-			
+
 			// 方法2: 处理纯文本路径格式 (Windows)
 			if len(filePaths) == 0 {
 				log.Printf("未检测到 file:// 格式，尝试处理纯文本路径")
@@ -752,7 +752,7 @@ func (ov *ObjectsView) handlePaste() {
 					}
 				}
 			}
-			
+
 			// 方法3: 处理Unix路径格式
 			if len(filePaths) == 0 {
 				lines := strings.Split(content, "\n")
@@ -766,53 +766,53 @@ func (ov *ObjectsView) handlePaste() {
 					}
 				}
 			}
-			
+
 			// 方法4: 简单处理 - 将整个剪贴板内容作为单个路径 (如果它看起来像一个路径)
 			if len(filePaths) == 0 {
 				content = strings.TrimSpace(content)
 				log.Printf("尝试将整个剪贴板内容作为路径: '%s'", content)
 				// 检查是否为有效的文件路径
 				if (len(content) > 3 && content[1] == ':' && (content[2] == '\\' || content[2] == '/')) || // Windows路径
-				   (len(content) > 1 && content[0] == '/') { // Unix路径
+					(len(content) > 1 && content[0] == '/') { // Unix路径
 					filePaths = append(filePaths, content)
 					log.Printf("将整个剪贴板内容作为文件路径: %s", content)
 				}
 			}
 		}
 	}
-	
+
 	// 检查是否有从S3复制的对象
 	copiedObjectsLock.RLock()
 	localCopiedObjects := make([]s3client.S3Object, len(copiedObjects))
 	copy(localCopiedObjects, copiedObjects)
 	hasCopiedObjects := len(copiedObjects) > 0
 	copiedObjectsLock.RUnlock()
-	
+
 	// 获取最后一次复制操作的信息
 	copyTimeLock.RLock()
 	lastCopy := lastCopyTime
 	copyType := lastCopyType
 	copyTimeLock.RUnlock()
-	
+
 	// 判断应该使用哪种复制内容
 	useSystemClipboard := len(filePaths) > 0
 	useS3Objects := hasCopiedObjects
-	
+
 	// 如果两种复制内容都存在，比较时间以确定使用哪个
 	if useSystemClipboard && useS3Objects {
 		// 检查系统剪贴板内容是否是最新的（通过检查内容是否在最近1秒内发生变化）
 		// 这是一个简单的启发式方法，因为我们无法直接获取系统剪贴板的更改时间
 		systemClipboardTime := time.Now() // 假设系统剪贴板内容是最新的
-		
+
 		// 如果S3复制时间晚于系统剪贴板时间，则使用S3对象
-		if lastCopy.After(systemClipboardTime.Add(-1 * time.Second)) && copyType == "s3" {
+		if lastCopy.After(systemClipboardTime.Add(-1*time.Second)) && copyType == "s3" {
 			useSystemClipboard = false
 		} else {
 			// 否则使用系统剪贴板（默认行为）
 			useS3Objects = false
 		}
 	}
-	
+
 	// 如果从系统剪贴板获取到了文件路径，则上传这些文件
 	if useSystemClipboard {
 		log.Printf("开始上传 %d 个文件: %v", len(filePaths), filePaths)
@@ -820,10 +820,10 @@ func (ov *ObjectsView) handlePaste() {
 		go ov.startUploadProcess(filePaths)
 		return
 	}
-	
+
 	// 如果有从S3复制的对象，执行S3到S3的复制
 	if useS3Objects {
-		dialog.ShowConfirm("确认粘贴", fmt.Sprintf("是否要粘贴 %d 个已复制的对象到当前目录？", len(localCopiedObjects)), 
+		dialog.ShowConfirm("确认粘贴", fmt.Sprintf("是否要粘贴 %d 个已复制的对象到当前目录？", len(localCopiedObjects)),
 			func(confirmed bool) {
 				if confirmed {
 					go ov.pasteS3Objects(localCopiedObjects)
@@ -831,7 +831,7 @@ func (ov *ObjectsView) handlePaste() {
 			}, ov.window)
 		return
 	}
-	
+
 	// 无法识别剪贴板内容格式
 	log.Printf("无法识别剪贴板内容格式")
 	ShowToast(ov.window, "剪贴板中没有可识别的文件路径。")
