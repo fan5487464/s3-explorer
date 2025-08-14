@@ -7,6 +7,7 @@ import (
 	"io" // 导入 io 包
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -98,58 +99,87 @@ type S3Object struct {
 }
 
 // ListObjects 列出指定存储桶和前缀下的对象（分页）
+// 此方法会优先显示文件夹，然后再显示文件
 func (sc *S3Client) ListObjects(bucketName, prefix, marker string, pageSize int32) ([]S3Object, *string, error) {
-	input := &s3.ListObjectsV2Input{
-		Bucket:    aws.String(bucketName),
-		Delimiter: aws.String("/"), // 用于区分文件夹
-		Prefix:    aws.String(prefix),
-		MaxKeys:   &pageSize,
-	}
-	if marker != "" {
-		input.ContinuationToken = aws.String(marker)
-	}
-
-	output, err := sc.client.ListObjectsV2(context.TODO(), input)
-	if err != nil {
-		return nil, nil, fmt.Errorf("列出对象失败: %w", err)
-	}
-
-	var objects []S3Object
-
-	// 处理 CommonPrefixes (文件夹)
-	for _, commonPrefix := range output.CommonPrefixes {
-		fullKey := *commonPrefix.Prefix
-		name := strings.TrimSuffix(fullKey, "/")
-		if prefix != "" {
-			name = strings.TrimPrefix(name, prefix)
+	// 如果 marker 为空，说明是第一页，我们需要获取所有对象然后重新分页
+	if marker == "" {
+		// 获取所有对象
+		allObjects, err := sc.ListAllObjectsUnderPrefix(bucketName, prefix)
+		if err != nil {
+			return nil, nil, fmt.Errorf("列出所有对象失败: %w", err)
 		}
-
-		objects = append(objects, S3Object{
-			Name:     name,
-			Key:      fullKey,
-			IsFolder: true,
-		})
-	}
-
-	// 处理 Contents (文件)
-	for _, content := range output.Contents {
-		fullKey := *content.Key
-		// 排除当前前缀本身（如果它是一个文件）
-		if fullKey == prefix {
-			continue
+		
+		// 分离文件夹和文件
+		var folders, files []S3Object
+		for _, obj := range allObjects {
+			if obj.IsFolder {
+				folders = append(folders, obj)
+			} else {
+				files = append(files, obj)
+			}
 		}
-		// 提取文件名，去除前缀
-		fileName := strings.TrimPrefix(fullKey, prefix)
-		objects = append(objects, S3Object{
-			Name:         fileName,
-			Key:          fullKey,
-			IsFolder:     false,
-			Size:         *content.Size,
-			LastModified: content.LastModified.Format("2006-01-02 15:04:05"), // 格式化时间
-		})
+		
+		// 合并文件夹和文件（文件夹在前）
+		allObjects = append(folders, files...)
+		
+		// 如果对象数量小于等于页面大小，直接返回所有对象
+		if int32(len(allObjects)) <= pageSize {
+			return allObjects, nil, nil
+		}
+		
+		// 返回第一页数据
+		nextMarker := fmt.Sprintf("page_2")
+		return allObjects[:pageSize], &nextMarker, nil
+	} else {
+		// 获取所有对象
+		allObjects, err := sc.ListAllObjectsUnderPrefix(bucketName, prefix)
+		if err != nil {
+			return nil, nil, fmt.Errorf("列出所有对象失败: %w", err)
+		}
+		
+		// 分离文件夹和文件
+		var folders, files []S3Object
+		for _, obj := range allObjects {
+			if obj.IsFolder {
+				folders = append(folders, obj)
+			} else {
+				files = append(files, obj)
+			}
+		}
+		
+		// 合并文件夹和文件（文件夹在前）
+		allObjects = append(folders, files...)
+		
+		// 解析页码
+		var page int
+		fmt.Sscanf(marker, "page_%d", &page)
+		
+		// 计算起始索引
+		startIndex := int32((page - 1)) * pageSize
+		
+		// 如果起始索引超出范围，返回空
+		if startIndex >= int32(len(allObjects)) {
+			return []S3Object{}, nil, nil
+		}
+		
+		// 计算结束索引
+		endIndex := startIndex + pageSize
+		if endIndex > int32(len(allObjects)) {
+			endIndex = int32(len(allObjects))
+		}
+		
+		// 获取当前页数据
+		pageObjects := allObjects[startIndex:endIndex]
+		
+		// 如果还有更多页面，设置下一个标记
+		var nextMarker *string
+		if endIndex < int32(len(allObjects)) {
+			nextMarkerStr := fmt.Sprintf("page_%d", page+1)
+			nextMarker = &nextMarkerStr
+		}
+		
+		return pageObjects, nextMarker, nil
 	}
-
-	return objects, output.NextContinuationToken, nil
 }
 
 // UploadObject 上传文件到 S3
@@ -308,6 +338,19 @@ func (sc *S3Client) ListAllObjectsUnderPrefix(bucketName, prefix string) ([]S3Ob
 			})
 		}
 	}
+
+	// 对对象进行排序，将文件夹放在前面，然后按名称排序
+	sort.Slice(objects, func(i, j int) bool {
+		// 如果一个是文件夹，另一个是文件，则文件夹排在前面
+		if objects[i].IsFolder && !objects[j].IsFolder {
+			return true
+		}
+		if !objects[i].IsFolder && objects[j].IsFolder {
+			return false
+		}
+		// 如果两个都是文件夹或都是文件，则按名称排序
+		return objects[i].Name < objects[j].Name
+	})
 
 	return objects, nil
 }

@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -131,7 +132,7 @@ func NewObjectsView(w fyne.Window, am *AnimationManager) *ObjectsView { // 修�
 		loadingIndicator:  NewThinProgressBar(),
 		serviceInfoButton: widget.NewButton("未选择服务", func() {}),
 		currentPage:       1,
-		pageSize:          200, // 0 表示不限制
+		pageSize:          100, // 0 表示不限制
 		pageMarkers:       []string{""},
 		viewMode:          listViewMode, // 默认是列表视图
 	}
@@ -415,7 +416,7 @@ func (ov *ObjectsView) SetBucketAndPrefix(client *s3client.S3Client, bucket, pre
 
 func (ov *ObjectsView) resetPagingAndSelection() {
 	ov.currentPage = 1
-	ov.pageMarkers = []string{""}
+	ov.pageMarkers = []string{""} // 重置为初始状态
 	ov.nextPageMarker = nil
 	ov.selectedObjectIDs = make(map[widget.ListItemID]struct{})
 	ov.lastSelectedID = -1
@@ -450,7 +451,16 @@ func (ov *ObjectsView) loadObjects() {
 			// 不分页时不需要 nextMarker
 		} else {
 			// 使用分页
-			marker := ov.pageMarkers[ov.currentPage-1]
+			// 对于第一页，marker应该是空字符串
+			var marker string
+			if ov.currentPage == 1 {
+				marker = ""
+			} else if ov.currentPage <= len(ov.pageMarkers) {
+				marker = ov.pageMarkers[ov.currentPage-1]
+			} else {
+				// 这种情况不应该发生，但为了安全起见
+				marker = ""
+			}
 			objects, nextMarker, err = ov.s3Client.ListObjects(ov.currentBucket, ov.currentPrefix, marker, int32(ov.pageSize))
 		}
 
@@ -463,8 +473,14 @@ func (ov *ObjectsView) loadObjects() {
 			} else {
 				ov.objects = objects
 				ov.nextPageMarker = nextMarker
-				if nextMarker != nil && len(ov.pageMarkers) == ov.currentPage && ov.pageSize != 0 {
-					ov.pageMarkers = append(ov.pageMarkers, *nextMarker)
+				// 只有在分页模式下才更新pageMarkers
+				if ov.pageSize != 0 && nextMarker != nil {
+					// 确保pageMarkers数组足够长
+					if len(ov.pageMarkers) < ov.currentPage+1 {
+						ov.pageMarkers = append(ov.pageMarkers, make([]string, ov.currentPage+1-len(ov.pageMarkers))...)
+					}
+					// 更新下一页的marker
+					ov.pageMarkers[ov.currentPage] = *nextMarker
 				}
 			}
 			ov.refreshObjectView()
@@ -2556,6 +2572,19 @@ func (ov *ObjectsView) filterObjects(searchTerm string) {
 				ov.filteredObjects = append(ov.filteredObjects, obj)
 			}
 		}
+
+		// 对过滤后的对象进行排序，确保文件夹在前
+		sort.Slice(ov.filteredObjects, func(i, j int) bool {
+			// 如果一个是文件夹，另一个是文件，则文件夹排在前面
+			if ov.filteredObjects[i].IsFolder && !ov.filteredObjects[j].IsFolder {
+				return true
+			}
+			if !ov.filteredObjects[i].IsFolder && ov.filteredObjects[j].IsFolder {
+				return false
+			}
+			// 如果两个都是文件夹或都是文件，则按名称排序
+			return ov.filteredObjects[i].Name < ov.filteredObjects[j].Name
+		})
 	}
 
 	// 重置选择状态
