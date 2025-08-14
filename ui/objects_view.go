@@ -131,7 +131,7 @@ func NewObjectsView(w fyne.Window, am *AnimationManager) *ObjectsView { // 修�
 		loadingIndicator:  NewThinProgressBar(),
 		serviceInfoButton: widget.NewButton("未选择服务", func() {}),
 		currentPage:       1,
-		pageSize:          1000,
+		pageSize:          0, // 0 表示不限制
 		pageMarkers:       []string{""},
 		viewMode:          listViewMode, // 默认是列表视图
 	}
@@ -437,8 +437,22 @@ func (ov *ObjectsView) loadObjects() {
 	ov.updatePaginationControls()
 
 	go func() {
-		marker := ov.pageMarkers[ov.currentPage-1]
-		objects, nextMarker, err := ov.s3Client.ListObjects(ov.currentBucket, ov.currentPrefix, marker, int32(ov.pageSize))
+		var objects []s3client.S3Object
+		var nextMarker *string
+		var err error
+
+		if ov.pageSize == 0 {
+			// 不限制分页，获取所有对象
+			objects, err = ov.s3Client.ListAllObjectsUnderPrefix(ov.currentBucket, ov.currentPrefix)
+			if err != nil {
+				log.Printf("列出所有对象失败: %v", err)
+			}
+			// 不分页时不需要 nextMarker
+		} else {
+			// 使用分页
+			marker := ov.pageMarkers[ov.currentPage-1]
+			objects, nextMarker, err = ov.s3Client.ListObjects(ov.currentBucket, ov.currentPrefix, marker, int32(ov.pageSize))
+		}
 
 		fyne.Do(func() {
 			ov.loadingIndicator.Hide()
@@ -449,7 +463,7 @@ func (ov *ObjectsView) loadObjects() {
 			} else {
 				ov.objects = objects
 				ov.nextPageMarker = nextMarker
-				if nextMarker != nil && len(ov.pageMarkers) == ov.currentPage {
+				if nextMarker != nil && len(ov.pageMarkers) == ov.currentPage && ov.pageSize != 0 {
 					ov.pageMarkers = append(ov.pageMarkers, *nextMarker)
 				}
 			}
@@ -845,18 +859,25 @@ func (ov *ObjectsView) updatePaginationControls() {
 		return
 	}
 
-	ov.pageInfoLabel.SetText(fmt.Sprintf("第 %d 页", ov.currentPage))
-
-	if ov.currentPage > 1 {
-		ov.prevButton.Enable()
-	} else {
+	// 如果 pageSize 为 0，表示不限制分页
+	if ov.pageSize == 0 {
+		ov.pageInfoLabel.SetText("无分页")
 		ov.prevButton.Disable()
-	}
-
-	if ov.nextPageMarker != nil {
-		ov.nextButton.Enable()
-	} else {
 		ov.nextButton.Disable()
+	} else {
+		ov.pageInfoLabel.SetText(fmt.Sprintf("第 %d 页", ov.currentPage))
+
+		if ov.currentPage > 1 {
+			ov.prevButton.Enable()
+		} else {
+			ov.prevButton.Disable()
+		}
+
+		if ov.nextPageMarker != nil {
+			ov.nextButton.Enable()
+		} else {
+			ov.nextButton.Disable()
+		}
 	}
 
 	if ov.loadingIndicator.Visible() {
@@ -1608,7 +1629,7 @@ func (ov *ObjectsView) GetContent() fyne.CanvasObject {
 	ov.pageSizeEntry.SetText(strconv.Itoa(ov.pageSize))
 	ov.pageSizeEntry.OnSubmitted = func(s string) {
 		ps, err := strconv.Atoi(s)
-		if err != nil || ps <= 0 {
+		if err != nil || ps < 0 {
 			dialog.ShowError(fmt.Errorf("无效的页面大小"), ov.window)
 			ov.pageSizeEntry.SetText(strconv.Itoa(ov.pageSize))
 			return

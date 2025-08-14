@@ -78,6 +78,10 @@ func showHelpDialog(w fyne.Window) {
 4. 视图切换:
    - 点击右上角的视图切换按钮可在列表和缩略图模式间切换。
    - 程序会为每个服务记住您的视图偏好。
+
+5. 注意事项:
+   - 由于 S3 协议不支持分页，所以分页功能文件夹显示数量可能不准确，但是总文件数是正确的。
+   - 分页配置为 0 表示不分页。
 `
 	content := widget.NewMultiLineEntry()
 	content.SetText(helpText)
@@ -141,8 +145,8 @@ func main() {
 	animationManager := ui.NewAnimationManager(w)
 
 	// 创建 UI 视图实例，并传入动画管理器
-	objectsView := ui.NewObjectsView(w, animationManager) // 修改构造函数调用
-	bucketsView := ui.NewBucketsView(w, animationManager) // 修改构造函数调用
+	objectsView := ui.NewObjectsView(w, animationManager)   // 修改构造函数调用
+	bucketsView := ui.NewBucketsView(w, animationManager)   // 修改构造函数调用
 	servicesView := ui.NewServicesView(w, animationManager) // 修改构造函数调用
 
 	// --- 设置视图间的交互回调 ---

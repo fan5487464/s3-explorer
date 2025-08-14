@@ -245,13 +245,16 @@ func (sc *S3Client) CreateFolder(bucketName, key string) error {
 	return nil
 }
 
-// ListAllObjectsUnderPrefix 递归地列出指定前缀下的所有对象（仅文件）
+// ListAllObjectsUnderPrefix 递归地列出指定前缀下的所有对象（包括文件和文件夹）
 func (sc *S3Client) ListAllObjectsUnderPrefix(bucketName, prefix string) ([]S3Object, error) {
 	var objects []S3Object
 	paginator := s3.NewListObjectsV2Paginator(sc.client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(bucketName),
-		Prefix: aws.String(prefix),
+		Bucket:    aws.String(bucketName),
+		Prefix:    aws.String(prefix),
+		Delimiter: aws.String("/"), // 添加分隔符以识别文件夹
 	})
+
+	processedKeys := make(map[string]bool) // 用于跟踪已处理的键，避免重复
 
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(context.TODO())
@@ -259,14 +262,46 @@ func (sc *S3Client) ListAllObjectsUnderPrefix(bucketName, prefix string) ([]S3Ob
 			return nil, fmt.Errorf("列出对象失败: %w", err)
 		}
 
-		for _, content := range page.Contents {
-			// 忽略 S3 中的"文件夹"占位符对象（key 以 / 结尾且大小为 0）
-			if strings.HasSuffix(*content.Key, "/") && *content.Size == 0 {
+		// 处理 CommonPrefixes (文件夹)
+		for _, commonPrefix := range page.CommonPrefixes {
+			fullKey := *commonPrefix.Prefix
+			// 避免重复处理
+			if processedKeys[fullKey] {
 				continue
 			}
+			processedKeys[fullKey] = true
+
+			name := strings.TrimSuffix(fullKey, "/")
+			if prefix != "" {
+				name = strings.TrimPrefix(name, prefix)
+			}
+
 			objects = append(objects, S3Object{
-				Name:         *content.Key, // 在这种情况下，Name 就是完整的 Key
-				Key:          *content.Key,
+				Name:     name,
+				Key:      fullKey,
+				IsFolder: true,
+			})
+		}
+
+		// 处理 Contents (文件)
+		for _, content := range page.Contents {
+			fullKey := *content.Key
+			// 避免重复处理
+			if processedKeys[fullKey] {
+				continue
+			}
+			processedKeys[fullKey] = true
+
+			// 忽略 S3 中的"文件夹"占位符对象（key 以 / 结尾且大小为 0）
+			if strings.HasSuffix(fullKey, "/") && *content.Size == 0 {
+				continue
+			}
+
+			// 提取文件名，去除前缀
+			fileName := strings.TrimPrefix(fullKey, prefix)
+			objects = append(objects, S3Object{
+				Name:         fileName,
+				Key:          fullKey,
 				IsFolder:     false,
 				Size:         *content.Size,
 				LastModified: content.LastModified.Format("2006-01-02 15:04:05"),
