@@ -590,6 +590,8 @@ func (ov *ObjectsView) updateBreadcrumbs() {
 // handleItemClick 处理列表项的点击事件，包含多选逻辑
 func (ov *ObjectsView) handleItemClick(id widget.ListItemID, m *desktop.MouseEvent) {
 	if m.Button == desktop.MouseButtonSecondary {
+		// 处理右键点击，显示上下文菜单
+		ov.showContextMenu(id, m)
 		return
 	}
 
@@ -648,6 +650,227 @@ func (ov *ObjectsView) handleItemClick(id widget.ListItemID, m *desktop.MouseEve
 	} else {
 		ov.window.SetTitle("S3 资源管理器") // 默认标题
 	}
+}
+
+// showContextMenu 显示右键菜单
+func (ov *ObjectsView) showContextMenu(id widget.ListItemID, m *desktop.MouseEvent) {
+	// 确保ID在有效范围内
+	if id >= len(ov.getDisplayedObjects()) {
+		return
+	}
+
+	// 检查该项目是否已被选中
+	_, alreadySelected := ov.selectedObjectIDs[id]
+	
+	// 如果点击的项目未被选中，则选中它
+	if !alreadySelected {
+		// 清除其他选择，只选择当前项目
+		ov.selectedObjectIDs = make(map[widget.ListItemID]struct{})
+		ov.selectedObjectIDs[id] = struct{}{}
+		ov.lastSelectedID = id
+		ov.refreshSelection()
+		ov.updateButtonsState()
+	}
+
+	// 获取选中的对象
+	items := ov.getDisplayedObjects()
+	var selectedObjects []s3client.S3Object
+	for selectedID := range ov.selectedObjectIDs {
+		if selectedID < len(items) {
+			selectedObjects = append(selectedObjects, items[selectedID])
+		}
+	}
+
+	// 创建菜单项
+	var menuItems []*fyne.MenuItem
+
+	// 如果只选中了一个项目
+	if len(selectedObjects) == 1 {
+		obj := selectedObjects[0]
+		if obj.IsFolder {
+			// 文件夹菜单项
+			menuItems = append(menuItems, fyne.NewMenuItem("打开", func() {
+				ov.SetBucketAndPrefix(ov.s3Client, ov.currentBucket, obj.Key)
+			}))
+		} else {
+			// 文件菜单项
+			menuItems = append(menuItems, fyne.NewMenuItem("打开", func() {
+				ov.showPreviewWindow(obj)
+			}))
+			
+			menuItems = append(menuItems, fyne.NewMenuItem("下载", func() {
+				// 使用系统文件管理器选择下载目录
+				go ov.openSystemFolderSelector()
+			}))
+		}
+		
+		menuItems = append(menuItems, fyne.NewMenuItem("复制", func() {
+			ov.handleCopy()
+		}))
+	} else if len(selectedObjects) > 1 {
+		// 多个项目选中
+		menuItems = append(menuItems, fyne.NewMenuItem("下载", func() {
+			// 使用系统文件管理器选择下载目录
+			go ov.openSystemFolderSelector()
+		}))
+		
+		menuItems = append(menuItems, fyne.NewMenuItem("复制", func() {
+			ov.handleCopy()
+		}))
+	}
+
+	// 添加粘贴选项（总是显示）
+	menuItems = append(menuItems, fyne.NewMenuItem("粘贴", func() {
+		ov.handlePaste()
+	}))
+
+	// 添加删除选项
+	if len(selectedObjects) > 0 {
+		menuItems = append(menuItems, fyne.NewMenuItem("删除", func() {
+			if len(ov.selectedObjectIDs) == 0 {
+				ShowToast(ov.window, "请先选择要删除的文件或文件夹。")
+				return
+			}
+
+			dialog.ShowConfirm("确认删除", fmt.Sprintf("确定要删除选中的 %d 个项目吗？", len(ov.selectedObjectIDs)), func(confirmed bool) {
+				if confirmed {
+					go func() {
+						// --- 为删除操作进行初步扫描以获取项目总数 ---
+						scanProgressDialog := dialog.NewProgressInfinite("正在准备删除", "正在扫描待删除项目...", ov.window)
+						scanProgressDialog.Show()
+
+						var totalItemsToDelete int32 = 0
+						var scanErrors []error
+						var scanWg sync.WaitGroup
+						var scanMu sync.Mutex
+
+						itemsToProcess := make(chan s3client.S3Object, len(ov.selectedObjectIDs))
+
+						// 使用选中的项目填充通道
+						for id := range ov.selectedObjectIDs {
+							items := ov.getDisplayedObjects()
+							if id < len(items) {
+								itemsToProcess <- items[id]
+							}
+						}
+						close(itemsToProcess)
+
+						// 用于扫描的工作者 goroutines
+						numScanWorkers := 5 // 可根据需要调整
+						for i := 0; i < numScanWorkers; i++ {
+							scanWg.Add(1)
+							go func() {
+								defer scanWg.Done()
+								for item := range itemsToProcess {
+									if item.IsFolder {
+										keys, err := ov.s3Client.ListAllKeysUnderPrefix(ov.currentBucket, item.Key)
+										scanMu.Lock()
+										if err != nil {
+											scanErrors = append(scanErrors, fmt.Errorf("扫描文件夹 '%s' 失败: %w", item.Name, err))
+										} else {
+											totalItemsToDelete += int32(len(keys)) // 添加文件夹内的所有键
+										}
+										scanMu.Unlock()
+									} else {
+										scanMu.Lock()
+										totalItemsToDelete++ // 文件本身
+										scanMu.Unlock()
+									}
+								}
+							}()
+						}
+						scanWg.Wait()
+						fyne.Do(func() {
+							scanProgressDialog.Hide()
+						})
+
+						if len(scanErrors) > 0 {
+							fyne.Do(func() {
+								dialog.ShowError(fmt.Errorf("扫描部分项目失败: %v", scanErrors[0]), ov.window) // 显示第一个错误
+							})
+							return
+						}
+
+						if totalItemsToDelete == 0 {
+							fyne.Do(func() {
+								dialog.ShowInformation("提示", "没有可删除的项目。", ov.window)
+							})
+							return
+						}
+
+						// --- 执行实际删除操作并显示进度条 ---
+						deleteProgressDialog := dialog.NewProgress("正在删除", "正在删除项目...", ov.window)
+						deleteProgressDialog.Show()
+
+						var currentDeletedItems int32 = 0
+						var deletionWg sync.WaitGroup
+						var deletionMu sync.Mutex
+						var failedDeletions []string
+
+						// 用于删除项目的通道（可以是文件或文件夹）
+						itemsToDeleteChannel := make(chan s3client.S3Object, len(ov.selectedObjectIDs))
+						for id := range ov.selectedObjectIDs {
+							items := ov.getDisplayedObjects()
+							if id < len(items) {
+								itemsToDeleteChannel <- items[id]
+							}
+						}
+						close(itemsToDeleteChannel)
+
+						numDeleteWorkers := 10 // 根据需要进行调整
+						for i := 0; i < numDeleteWorkers; i++ {
+							deletionWg.Add(1)
+							go func() {
+								defer deletionWg.Done()
+								for selectedObject := range itemsToDeleteChannel {
+									var err error
+									if selectedObject.IsFolder {
+										s3Prefix := selectedObject.Key
+										if !strings.HasSuffix(s3Prefix, "/") {
+											s3Prefix += "/"
+										}
+										// 调用更新进度的新函数
+										err = ov.deleteFolderAndContentsWithProgress(ov.currentBucket, s3Prefix, &currentDeletedItems, &deletionMu, deleteProgressDialog, totalItemsToDelete)
+									} else {
+										err = ov.s3Client.DeleteObject(ov.currentBucket, selectedObject.Key)
+										deletionMu.Lock()
+										currentDeletedItems++
+										fyne.Do(func() { deleteProgressDialog.SetValue(float64(currentDeletedItems) / float64(totalItemsToDelete)) })
+										deletionMu.Unlock()
+									}
+
+									if err != nil {
+										deletionMu.Lock()
+										failedDeletions = append(failedDeletions, selectedObject.Name)
+										deletionMu.Unlock()
+										log.Printf("删除项目 '%s' 失败: %v", selectedObject.Name, err)
+									}
+								}
+							}()
+						}
+						deletionWg.Wait()
+						fyne.Do(func() {
+							deleteProgressDialog.Hide()
+						})
+
+						fyne.Do(func() {
+							if len(failedDeletions) > 0 {
+								dialog.ShowError(fmt.Errorf("部分项目删除失败: %s", strings.Join(failedDeletions, ", ")), ov.window)
+							} else {
+								ShowToast(ov.window, fmt.Sprintf("%d 个项目已成功删除。", len(ov.selectedObjectIDs)))
+							}
+							ov.resetPagingAndSelection()
+							ov.loadObjects()
+						})
+					}()
+				}
+			}, ov.window)
+		}))
+	}
+
+	// 创建并显示菜单
+	menu := fyne.NewMenu("", menuItems...)
+	widget.ShowPopUpMenuAtPosition(menu, ov.window.Canvas(), m.AbsolutePosition)
 }
 
 // unselectAllObjects 取消所有对象的选择
