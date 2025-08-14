@@ -689,44 +689,70 @@ func (ov *ObjectsView) showContextMenu(id widget.ListItemID, m *desktop.MouseEve
 		obj := selectedObjects[0]
 		if obj.IsFolder {
 			// 文件夹菜单项
-			menuItems = append(menuItems, fyne.NewMenuItem("打开", func() {
+			openItem := fyne.NewMenuItem("打开", func() {
 				ov.SetBucketAndPrefix(ov.s3Client, ov.currentBucket, obj.Key)
-			}))
+			})
+			openItem.Icon = theme.FolderOpenIcon()
+			menuItems = append(menuItems, openItem)
 		} else {
 			// 文件菜单项
-			menuItems = append(menuItems, fyne.NewMenuItem("打开", func() {
+			openItem := fyne.NewMenuItem("打开", func() {
 				ov.showPreviewWindow(obj)
-			}))
+			})
+			openItem.Icon = theme.FileImageIcon() // 使用更通用的图标
+			menuItems = append(menuItems, openItem)
 			
-			menuItems = append(menuItems, fyne.NewMenuItem("下载", func() {
+			downloadItem := fyne.NewMenuItem("下载", func() {
 				// 使用系统文件管理器选择下载目录
 				go ov.openSystemFolderSelector()
-			}))
+			})
+			downloadItem.Icon = theme.DownloadIcon()
+			menuItems = append(menuItems, downloadItem)
+			
+			// 添加分隔线
+			menuItems = append(menuItems, fyne.NewMenuItemSeparator())
 		}
 		
-		menuItems = append(menuItems, fyne.NewMenuItem("复制", func() {
+		copyItem := fyne.NewMenuItem("复制", func() {
 			ov.handleCopy()
-		}))
+		})
+		copyItem.Icon = theme.ContentCopyIcon()
+		menuItems = append(menuItems, copyItem)
 	} else if len(selectedObjects) > 1 {
 		// 多个项目选中
-		menuItems = append(menuItems, fyne.NewMenuItem("下载", func() {
+		downloadItem := fyne.NewMenuItem("下载", func() {
 			// 使用系统文件管理器选择下载目录
 			go ov.openSystemFolderSelector()
-		}))
+		})
+		downloadItem.Icon = theme.DownloadIcon()
+		menuItems = append(menuItems, downloadItem)
 		
-		menuItems = append(menuItems, fyne.NewMenuItem("复制", func() {
+		copyItem := fyne.NewMenuItem("复制", func() {
 			ov.handleCopy()
-		}))
+		})
+		copyItem.Icon = theme.ContentCopyIcon()
+		menuItems = append(menuItems, copyItem)
+		
+		// 添加分隔线
+		menuItems = append(menuItems, fyne.NewMenuItemSeparator())
+	} else {
+		// 没有选中项目时也添加分隔线占位符
+		menuItems = append(menuItems, fyne.NewMenuItemSeparator())
 	}
 
 	// 添加粘贴选项（总是显示）
-	menuItems = append(menuItems, fyne.NewMenuItem("粘贴", func() {
+	pasteItem := fyne.NewMenuItem("粘贴", func() {
 		ov.handlePaste()
-	}))
+	})
+	pasteItem.Icon = theme.ContentPasteIcon()
+	menuItems = append(menuItems, pasteItem)
+
+	// 添加分隔线
+	menuItems = append(menuItems, fyne.NewMenuItemSeparator())
 
 	// 添加删除选项
 	if len(selectedObjects) > 0 {
-		menuItems = append(menuItems, fyne.NewMenuItem("删除", func() {
+		deleteItem := fyne.NewMenuItem("删除", func() {
 			if len(ov.selectedObjectIDs) == 0 {
 				ShowToast(ov.window, "请先选择要删除的文件或文件夹。")
 				return
@@ -865,12 +891,25 @@ func (ov *ObjectsView) showContextMenu(id widget.ListItemID, m *desktop.MouseEve
 					}()
 				}
 			}, ov.window)
-		}))
+		})
+		deleteItem.Icon = theme.DeleteIcon()
+		menuItems = append(menuItems, deleteItem)
 	}
 
 	// 创建并显示菜单
 	menu := fyne.NewMenu("", menuItems...)
-	widget.ShowPopUpMenuAtPosition(menu, ov.window.Canvas(), m.AbsolutePosition)
+	
+	// 创建弹出菜单并自定义样式
+	popUpMenu := widget.NewPopUpMenu(menu, ov.window.Canvas())
+	
+	// 设置菜单位置
+	popUpMenu.ShowAtPosition(m.AbsolutePosition)
+	
+	// 可以通过动画管理器添加一些效果
+	if ov.animationManager != nil {
+		// 添加淡入效果
+		ov.animationManager.AnimateFade(popUpMenu, time.Millisecond*200, 0.0, 1.0, nil)
+	}
 }
 
 // unselectAllObjects 取消所有对象的选择
